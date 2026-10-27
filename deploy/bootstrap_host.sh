@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare a bare-metal Ubuntu 22.04 host with an H200 to run RAVEN.
+# Prepare a bare-metal Ubuntu 22.04 host with a supported NVIDIA GPU to run RAVEN.
 # Idempotent: safe to re-run.
 set -euo pipefail
 
@@ -9,7 +9,7 @@ need_root
 
 log "Checking the NVIDIA driver"
 if ! command -v nvidia-smi >/dev/null; then
-  echo "nvidia-smi not found. Install the driver first (H200 needs 550 or newer):"
+  echo "nvidia-smi not found. Install a supported NVIDIA driver (CUDA 12.4 requires driver 550 or newer):"
   echo "  apt-get install -y nvidia-driver-560-server && reboot"
   exit 1
 fi
@@ -56,4 +56,4 @@ sysctl -w fs.file-max=1048576
 log "Verifying GPU access from a container"
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L
 
-log "Host is ready. Next: cp .env.example .env, edit the change-me values, then make up"
+log "Host is ready. Next: make env, edit optional .env settings, then make up"
