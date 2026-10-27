@@ -7,6 +7,7 @@ the floor, not the ceiling.
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +26,9 @@ from raven_common.settings import get_settings
 
 settings = get_settings()
 log = configure("api", settings.log_level)
-API_TOKEN = os.environ.get("RAVEN_API_TOKEN", "change-me")
+API_TOKEN = os.environ.get("RAVEN_API_TOKEN", "")
+if len(API_TOKEN) < 32 or API_TOKEN.startswith("change-me"):
+    raise RuntimeError("RAVEN_API_TOKEN must be configured with a generated secret before startup.")
 UI_DIR = Path("/app/ui")
 
 app = FastAPI(title="RAVEN API", version="1.0.0", default_response_class=ORJSONResponse)
@@ -45,7 +48,7 @@ async def shutdown() -> None:
 
 async def auth(authorization: str = Header(default="")) -> str:
     token = authorization.removeprefix("Bearer ").strip()
-    if token != API_TOKEN:
+    if not secrets.compare_digest(token, API_TOKEN):
         raise HTTPException(401, "invalid or missing bearer token")
     return token
 
