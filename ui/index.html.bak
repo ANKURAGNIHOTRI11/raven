@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAVEN — exposure console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#e9ecee; --panel:#f7f8f9; --ink:#141b22; --ink-soft:#5b6874;
+    --rule:#c9d0d6; --signal:#b4341c; --chain:#0d6a6a; --hold:#8a6410;
+    --ok:#2f6b3a; --shadow:rgba(20,27,34,.08);
+  }
+  :root:not([data-theme="light"]){ }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#12171c; --panel:#191f26; --ink:#e4e9ed; --ink-soft:#93a1ac;
+      --rule:#2c343c; --signal:#e26a4f; --chain:#3fb3ad; --hold:#d9a63a;
+      --ok:#6cc47f; --shadow:rgba(0,0,0,.4);
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif; font-size:15px; line-height:1.5;
+  }
+  code,.mono,td.num{font-family:"IBM Plex Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+  a{color:inherit}
+  header{
+    display:flex; align-items:baseline; gap:1.5rem; flex-wrap:wrap;
+    padding:1.1rem 1.6rem; border-bottom:1px solid var(--rule); background:var(--panel);
+  }
+  header h1{font-size:1.15rem;font-weight:700;letter-spacing:-.01em;margin:0}
+  header p{margin:0;color:var(--ink-soft);font-size:.85rem}
+  header .spacer{flex:1}
+  input,button,select{font:inherit;color:inherit}
+  input[type=password],input[type=text]{
+    background:var(--ground);border:1px solid var(--rule);border-radius:3px;padding:.35rem .5rem;width:16rem;
+  }
+  button{
+    background:var(--ink);color:var(--panel);border:0;border-radius:3px;
+    padding:.4rem .85rem;cursor:pointer;
+  }
+  button.ghost{background:transparent;color:var(--ink);border:1px solid var(--rule)}
+  button:focus-visible,input:focus-visible,tr:focus-visible{outline:2px solid var(--chain);outline-offset:2px}
+  main{display:grid;grid-template-columns:15rem minmax(0,1fr) 25rem;gap:1px;background:var(--rule);min-height:calc(100vh - 64px)}
+  main>section{background:var(--ground);padding:1.2rem 1.4rem;overflow:auto}
+  @media (max-width:1100px){ main{grid-template-columns:1fr} }
+
+  /* pipeline rail: the product IS the pipeline, so the nav is the pipeline */
+  .stage{display:flex;justify-content:space-between;gap:.5rem;padding:.55rem 0;border-bottom:1px solid var(--rule)}
+  .stage:last-child{border-bottom:0}
+  .stage span:first-child{color:var(--ink-soft);font-size:.85rem}
+  .stage b{font-weight:600}
+  .rail h2,.detail h2,.board h2{font-size:.8rem;font-weight:600;color:var(--ink-soft);margin:0 0 .6rem}
+
+  .headline{display:flex;align-items:flex-end;gap:1rem;margin-bottom:1.1rem;flex-wrap:wrap}
+  .headline .count{font-size:3.4rem;line-height:.9;font-weight:600;letter-spacing:-.03em;font-family:"IBM Plex Mono",monospace}
+  .headline .count.alarm{color:var(--signal)}
+  .headline p{margin:0;max-width:34rem;color:var(--ink-soft)}
+
+  table{width:100%;border-collapse:collapse;font-size:.88rem}
+  th{text-align:left;font-weight:600;color:var(--ink-soft);font-size:.78rem;padding:.4rem .5rem;border-bottom:1px solid var(--rule)}
+  td{padding:.45rem .5rem;border-bottom:1px solid var(--rule)}
+  tbody tr{cursor:pointer}
+  tbody tr:hover,tbody tr[aria-selected=true]{background:var(--panel)}
+  td.num{text-align:right}
+  .band{display:inline-block;padding:0 .4rem;border-radius:2px;font-size:.75rem;font-weight:600;border:1px solid currentColor}
+  .band.critical,.band.high{color:var(--signal)}
+  .band.medium{color:var(--hold)}
+  .band.low,.band.informational{color:var(--ink-soft)}
+  .chainmark{color:var(--chain);font-weight:600}
+  .flag{color:var(--hold)}
+
+  /* evidence ledger: the one bold element */
+  .ledger{margin:.5rem 0 1rem}
+  .row{display:grid;grid-template-columns:9.5rem 1fr 3.2rem;align-items:center;gap:.5rem;padding:.18rem 0;font-size:.8rem}
+  .row .label{color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .bar{position:relative;height:.7rem;background:linear-gradient(90deg,transparent 49.7%,var(--rule) 49.7%,var(--rule) 50.3%,transparent 50.3%)}
+  .bar i{position:absolute;top:0;height:100%;display:block}
+  .bar i.up{left:50%;background:var(--signal)}
+  .bar i.down{right:50%;background:var(--ok)}
+  .row .val{text-align:right;font-family:"IBM Plex Mono",monospace;font-size:.75rem}
+  .detail dl{display:grid;grid-template-columns:8.5rem 1fr;gap:.25rem .8rem;margin:0 0 1rem;font-size:.85rem}
+  .detail dt{color:var(--ink-soft)}
+  .detail dd{margin:0}
+  .path{font-family:"IBM Plex Mono",monospace;font-size:.76rem;padding:.4rem .5rem;background:var(--panel);border-left:2px solid var(--chain);margin-bottom:.4rem;overflow-wrap:anywhere}
+  .rationale{white-space:pre-wrap;font-size:.83rem;background:var(--panel);padding:.6rem;border:1px solid var(--rule);max-height:16rem;overflow:auto}
+  .actions{display:flex;gap:.5rem;margin-top:.8rem}
+  .empty{color:var(--ink-soft);font-size:.88rem;padding:1.2rem 0}
+  .tabs{display:flex;gap:1rem;margin-bottom:.8rem;border-bottom:1px solid var(--rule)}
+  .tabs button{background:none;color:var(--ink-soft);border:0;border-bottom:2px solid transparent;padding:.3rem 0;border-radius:0}
+  .tabs button[aria-current=true]{color:var(--ink);border-bottom-color:var(--signal)}
+  .toast{position:fixed;bottom:1rem;right:1rem;background:var(--ink);color:var(--panel);padding:.6rem .9rem;border-radius:3px;box-shadow:0 2px 12px var(--shadow)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>RAVEN</h1>
+  <p>Exposure intelligence for the estate</p>
+  <span class="spacer"></span>
+  <label class="mono" style="font-size:.8rem;color:var(--ink-soft)">token
+    <input id="token" type="password" autocomplete="off" placeholder="bearer token">
+  </label>
+  <button id="connect">Connect</button>
+</header>
+
+<main>
+  <section class="rail">
+    <h2>Pipeline</h2>
+    <div id="rail"></div>
+    <h2 style="margin-top:1.4rem">Feeds</h2>
+    <div id="feeds"></div>
+    <h2 style="margin-top:1.4rem">Model trust</h2>
+    <div id="trust"></div>
+  </section>
+
+  <section class="board">
+    <div class="headline">
+      <span class="count" id="hero">—</span>
+      <p id="heroText">Connect with your API token to load the queue.</p>
+    </div>
+    <div class="tabs" role="tablist">
+      <button data-view="all" aria-current="true">Scored findings</button>
+      <button data-view="chains">Exploit chains</button>
+      <button data-view="queue">Awaiting approval</button>
+      <button data-view="quarantine">Quarantine</button>
+    </div>
+    <div id="board"><p class="empty">Nothing loaded yet.</p></div>
+  </section>
+
+  <section class="detail" id="detail">
+    <h2>Detail</h2>
+    <p class="empty">Select a row to see why it scored the way it did.</p>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let token = sessionStorage.getItem("raven_token") || "";
+let view = "all";
+let selected = null;
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json", ...(options.headers||{}) }
+  });
+  if (res.status === 401) throw new Error("Token rejected. Check the value and connect again.");
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+function toast(msg) {
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = msg; el.role = "status";
+  document.body.appendChild(el); setTimeout(() => el.remove(), 4000);
+}
+
+function fmt(n, d = 1) { return n === null || n === undefined ? "—" : Number(n).toFixed(d); }
+
+async function loadOverview() {
+  const o = await api("/api/overview");
+  const c = o.counts;
+  $("#rail").innerHTML = [
+    ["Vulnerabilities", c.vulnerabilities], ["Assets", c.assets],
+    ["Open findings", c.open_findings], ["High or critical", c.elevated],
+    ["Predicted chains", c.chains], ["Awaiting a person", c.pending_approvals],
+    ["Abstained", c.abstentions], ["Quarantined records", c.quarantined],
+  ].map(([k, v]) => `<div class="stage"><span>${k}</span><b class="mono">${v ?? 0}</b></div>`).join("");
+
+  $("#feeds").innerHTML = o.sources.map(s => {
+    const broken = s.circuit_open_until || s.consecutive_failures > 0;
+    return `<div class="stage"><span>${s.source_id}</span><b class="mono" ${broken ? 'style="color:var(--signal)"' : ""}>${
+      s.circuit_open_until ? "breaker open" : (s.last_success ? s.accepted_records : "waiting")}</b></div>`;
+  }).join("");
+
+  $("#trust").innerHTML = o.model_trust.length
+    ? o.model_trust.map(m => `<div class="stage"><span>${m.model_name}</span><b class="mono">${fmt(m.trust_score,2)}</b></div>`).join("")
+    : `<p class="empty">No outcomes recorded yet.</p>`;
+
+  $("#hero").textContent = c.pending_approvals ?? 0;
+  $("#hero").className = "count" + ((c.pending_approvals ?? 0) > 0 ? " alarm" : "");
+  $("#heroText").textContent = (c.pending_approvals ?? 0) === 0
+    ? `Nothing is waiting on a person. ${c.chains ?? 0} predicted exploit chains are under watch.`
+    : `changes are waiting for a decision. ${c.chains ?? 0} of the open findings sit on a predicted exploit chain, where no single CVE looks urgent on its own.`;
+}
+
+function findingsTable(data) {
+  if (!data.length) return `<p class="empty">Nothing here yet. The pipeline fills this once the crawler and the graph engine have both run.</p>`;
+  return `<table><thead><tr>
+    <th>CVE</th><th>Asset</th><th>Env</th><th class="num">Risk</th><th>Band</th>
+    <th class="num">Conf</th><th class="num">Chain</th><th class="num">Blast</th><th>Decision</th>
+  </tr></thead><tbody>${data.map((r, i) => `
+    <tr tabindex="0" data-cve="${r.cve_id}" data-asset="${r.asset_id}" aria-selected="false">
+      <td class="mono">${r.cve_id}${r.kev ? ' <span class="chainmark" title="CISA KEV">KEV</span>' : ""}</td>
+      <td>${r.hostname || r.asset_id}</td>
+      <td>${r.environment ?? ""}</td>
+      <td class="num">${fmt(r.fused_score)}</td>
+      <td><span class="band ${r.band}">${r.band}</span></td>
+      <td class="num">${fmt(r.confidence, 2)}</td>
+      <td class="num ${r.chain_score > 0.25 ? "chainmark" : ""}">${fmt(r.chain_score, 2)}</td>
+      <td class="num">${r.blast_radius ?? 0}</td>
+      <td>${r.action ?? "—"}${r.adversarial_flag ? ' <span class="flag" title="Robustness monitor flagged this signal">⚑</span>' : ""}</td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+function queueTable(data) {
+  if (!data.length) return `<p class="empty">The approval queue is clear.</p>`;
+  return `<table><thead><tr><th>CVE</th><th>Asset</th><th>Env</th><th class="num">Risk</th><th class="num">Conf</th><th>Verifier</th><th></th></tr></thead>
+  <tbody>${data.map(r => `<tr tabindex="0" data-cve="${r.cve_id}" data-asset="${r.asset_id}" data-approval="${r.approval_id}">
+    <td class="mono">${r.cve_id}</td><td>${r.hostname || r.asset_id}</td><td>${r.environment}</td>
+    <td class="num">${fmt(r.fused_score)}</td><td class="num">${fmt(r.confidence,2)}</td>
+    <td>${r.verifier_verdict}</td>
+    <td><button class="ghost" data-approve="${r.approval_id}">Approve</button>
+        <button class="ghost" data-reject="${r.approval_id}">Reject</button></td>
+  </tr>`).join("")}</tbody></table>`;
+}
+
+function quarantineTable(data) {
+  if (!data.length) return `<p class="empty">No records have been rejected at the contract boundary.</p>`;
+  return `<table><thead><tr><th>Source</th><th>Reason</th><th>Detail</th><th>When</th></tr></thead>
+  <tbody>${data.map(q => `<tr><td>${q.source_id ?? ""}</td><td class="mono">${q.reason}</td>
+    <td>${(q.detail||"").slice(0,90)}</td><td class="mono">${(q.quarantined_at||"").slice(0,19)}</td></tr>`).join("")}</tbody></table>`;
+}
+
+async function loadBoard() {
+  const board = $("#board");
+  try {
+    if (view === "queue") board.innerHTML = queueTable(await api("/api/queue"));
+    else if (view === "quarantine") board.innerHTML = quarantineTable(await api("/api/quarantine"));
+    else board.innerHTML = findingsTable(await api("/api/findings?limit=100" + (view === "chains" ? "&chains_only=true" : "")));
+  } catch (e) { board.innerHTML = `<p class="empty">${e.message}</p>`; }
+}
+
+function ledger(components) {
+  const entries = Object.entries(components || {}).sort((a,b) => Math.abs(b[1]) - Math.abs(a[1]));
+  if (!entries.length) return "";
+  const max = Math.max(...entries.map(([,v]) => Math.abs(v))) || 1;
+  return `<div class="ledger">${entries.map(([k,v]) => {
+    const pct = Math.abs(v) / max * 50;
+    return `<div class="row"><span class="label">${k.replace(/_/g," ")}</span>
+      <span class="bar"><i class="${v>=0?"up":"down"}" style="width:${pct}%"></i></span>
+      <span class="val">${v>=0?"+":""}${fmt(v,2)}</span></div>`;
+  }).join("")}</div>`;
+}
+
+async function loadDetail(cve, asset) {
+  const d = $("#detail");
+  try {
+    const r = await api(`/api/finding/${encodeURIComponent(cve)}/${encodeURIComponent(asset)}`);
+    const a = r.assessment, dec = r.decision, sig = r.graph_signal;
+    const paths = (sig?.paths_json || []).slice(0,3);
+    d.innerHTML = `<h2>Detail</h2>
+      <dl>
+        <dt>Finding</dt><dd class="mono">${a.cve_id} on ${a.asset_id}</dd>
+        <dt>Fused risk</dt><dd class="mono">${fmt(a.fused_score)} (${a.band}), interval ${fmt(a.ci_low)}–${fmt(a.ci_high)}</dd>
+        <dt>Confidence</dt><dd class="mono">${fmt(a.confidence,2)}</dd>
+        <dt>Remediate by</dt><dd>${a.sla_hours} h from scoring</dd>
+        <dt>Decision</dt><dd>${dec ? `${dec.action} · verifier ${dec.verifier_verdict} · ${dec.grounded ? "grounded" : "ungrounded"}` : "not yet assessed"}</dd>
+      </dl>
+      <h2>Why this score</h2>
+      ${ledger(a.components)}
+      ${paths.length ? `<h2>Ranked attack paths</h2>${paths.map(p => `<div class="path">${p.nodes.join(" → ")}<br>feasibility ${fmt(p.feasibility,2)} · impact ${fmt(p.impact,2)}${p.is_sleeper_chain ? ' · <span class="chainmark">sleeper chain</span>' : ""}</div>`).join("")}` : ""}
+      ${dec?.rationale ? `<h2>Analyst model</h2><div class="rationale">${dec.rationale.replace(/</g,"&lt;")}</div>` : ""}
+      ${dec?.plan ? `<h2>Proposed change</h2><div class="rationale">${JSON.stringify(dec.plan, null, 2).replace(/</g,"&lt;")}</div>` : ""}`;
+  } catch (e) { d.innerHTML = `<h2>Detail</h2><p class="empty">${e.message}</p>`; }
+}
+
+document.addEventListener("click", async (e) => {
+  const tab = e.target.closest(".tabs button");
+  if (tab) {
+    view = tab.dataset.view;
+    document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-current", b === tab));
+    return loadBoard();
+  }
+  const approve = e.target.dataset.approve, reject = e.target.dataset.reject;
+  if (approve || reject) {
+    e.stopPropagation();
+    const analyst = prompt("Your name for the audit log:");
+    if (!analyst) return;
+    try {
+      await api(`/api/queue/${approve || reject}`, {
+        method: "POST",
+        body: JSON.stringify({ approve: Boolean(approve), analyst, reason: "" })
+      });
+      toast(approve ? "Approved. The bundle goes to your change pipeline." : "Rejected. Logged as an override.");
+      await loadBoard(); await loadOverview();
+    } catch (err) { toast(err.message); }
+    return;
+  }
+  const row = e.target.closest("tbody tr");
+  if (row?.dataset.cve) {
+    document.querySelectorAll("tbody tr").forEach(r => r.setAttribute("aria-selected", r === row));
+    selected = row.dataset;
+    loadDetail(row.dataset.cve, row.dataset.asset);
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  const row = e.target.closest?.("tbody tr");
+  if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); row.click(); }
+});
+
+$("#connect").addEventListener("click", async () => {
+  token = $("#token").value.trim();
+  sessionStorage.setItem("raven_token", token);
+  try { await loadOverview(); await loadBoard(); toast("Connected."); }
+  catch (e) { toast(e.message); }
+});
+
+if (token) { $("#token").value = token; loadOverview().then(loadBoard).catch(() => {}); }
+setInterval(() => { if (token) loadOverview().catch(() => {}); }, 20000);
+</script>
+</body>
+</html>

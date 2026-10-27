@@ -1,0 +1,24 @@
+{
+  "title": "RAVEN pipeline",
+  "uid": "raven-pipeline",
+  "timezone": "browser",
+  "refresh": "30s",
+  "panels": [
+    {"type":"timeseries","title":"Records consumed per service","gridPos":{"h":8,"w":12,"x":0,"y":0},
+     "targets":[{"expr":"sum by (service) (rate(raven_messages_consumed_total[5m]))","legendFormat":"{{service}}"}]},
+    {"type":"timeseries","title":"Quarantined records by reason","gridPos":{"h":8,"w":12,"x":12,"y":0},
+     "targets":[{"expr":"sum by (reason) (rate(raven_quarantined_total[15m]))","legendFormat":"{{reason}}"}]},
+    {"type":"timeseries","title":"Prompt-guard interventions","gridPos":{"h":8,"w":12,"x":0,"y":8},
+     "targets":[{"expr":"sum by (rule) (rate(raven_guard_blocks_total[15m]))","legendFormat":"{{rule}}"}]},
+    {"type":"timeseries","title":"Agent decisions","gridPos":{"h":8,"w":12,"x":12,"y":8},
+     "targets":[{"expr":"sum by (action) (rate(raven_agent_decisions_total[30m]))","legendFormat":"{{action}}"}]},
+    {"type":"stat","title":"Model trust","gridPos":{"h":6,"w":8,"x":0,"y":16},
+     "targets":[{"expr":"raven_model_trust_score","legendFormat":"{{model}}"}]},
+    {"type":"timeseries","title":"Stage latency p95","gridPos":{"h":6,"w":16,"x":8,"y":16},
+     "targets":[{"expr":"histogram_quantile(0.95, sum by (le, service, stage) (rate(raven_stage_seconds_bucket[10m])))","legendFormat":"{{service}}/{{stage}}"}]},
+    {"type":"stat","title":"Attack graph size","gridPos":{"h":6,"w":24,"x":0,"y":22},
+     "targets":[{"expr":"raven_graph_nodes","legendFormat":"{{label}}"}]}
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

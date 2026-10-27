@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAVEN · Exposure intelligence</title>
+<style>
+:root{
+  --bg:#0B0E14; --panel:#111620; --panel2:#151b28; --line:#232c3d; --line2:#2d3850;
+  --text:#d9e0ee; --dim:#8593ab; --faint:#5a6884; --paper:#eef1f6; --ink:#141a26;
+  --red:#ff4d5e; --amber:#ffb020; --blue:#5b8def; --slate:#7b8cab; --green:#2fd08a;
+  --mono:"IBM Plex Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Inter,"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--sans);overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+input,select{font:inherit;color:var(--text)}
+.mono{font-family:var(--mono)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
+
+/* top bar */
+header{height:56px;display:flex;align-items:center;gap:20px;padding:0 20px;border-bottom:1px solid var(--line);background:linear-gradient(#0e131d,#0B0E14)}
+.brand{font:700 18px var(--mono);letter-spacing:.18em}
+.brand small{display:block;font:400 10px var(--sans);letter-spacing:.04em;color:var(--faint);margin-top:-2px}
+nav{display:flex;gap:4px;margin-left:12px}
+nav button{background:none;border:0;padding:8px 14px;border-radius:6px;color:var(--dim)}
+nav button:hover{color:var(--text);background:var(--panel)}
+nav button.on{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--blue)}
+.grow{flex:1}
+.tok{display:flex;gap:8px;align-items:center}
+.tok input{background:var(--panel);border:1px solid var(--line2);padding:7px 10px;border-radius:6px;width:230px;font-family:var(--mono);font-size:12px}
+.btn{background:var(--blue);border:0;color:#fff;padding:8px 14px;border-radius:6px;font-weight:600}
+.btn.ghost{background:var(--panel2);border:1px solid var(--line2);color:var(--text)}
+.btn.red{background:var(--red)} .btn.green{background:var(--green);color:#04150d}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--faint)}
+.dot.ok{background:var(--green);box-shadow:0 0 8px var(--green)}
+
+/* layout */
+main{height:calc(100% - 56px);display:grid;grid-template-columns:1fr 280px;min-height:0}
+.view{display:none;min-height:0;overflow:auto;padding:20px}
+.view.on{display:block}
+aside{border-left:1px solid var(--line);padding:18px;overflow:auto;background:#0c111a}
+h2{margin:0 0 12px;font:600 12px var(--mono);letter-spacing:.14em;color:var(--dim);text-transform:uppercase}
+
+/* ladder */
+.ladder{display:flex;flex-direction:column;gap:8px}
+.rung{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel);position:relative;overflow:hidden}
+.rung::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+.rung b{font:600 12px var(--mono);letter-spacing:.12em;color:var(--c)}
+.rung .n{font:700 28px var(--mono);line-height:1.1}
+.rung span{color:var(--dim);font-size:12px}
+.kv{display:grid;grid-template-columns:1fr auto;gap:6px 10px;font-size:13px}
+.kv div:nth-child(odd){color:var(--dim)} .kv div:nth-child(even){font-family:var(--mono);text-align:right}
+
+/* toolbar */
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+.bar input[type=search]{flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line2);padding:9px 12px;border-radius:8px}
+.chip{background:var(--panel);border:1px solid var(--line2);padding:6px 12px;border-radius:999px;color:var(--dim);font-size:12px}
+.chip.on{color:#fff;border-color:var(--blue);background:#17284a}
+.chip.kev.on{border-color:var(--red);background:#3a1219}
+
+/* table */
+table{width:100%;border-collapse:separate;border-spacing:0 6px}
+th{font:600 11px var(--mono);letter-spacing:.1em;color:var(--faint);text-align:left;padding:0 12px 4px;text-transform:uppercase}
+td{background:var(--panel);padding:11px 12px;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+td:first-child{border-left:1px solid var(--line);border-radius:10px 0 0 10px}
+td:last-child{border-right:1px solid var(--line);border-radius:0 10px 10px 0}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--panel2);border-color:var(--line2)}
+.cve{font:600 13px var(--mono)} .sub{color:var(--dim);font-size:12px}
+.band{display:inline-block;padding:2px 9px;border-radius:5px;font:600 11px var(--mono);letter-spacing:.05em;text-transform:uppercase}
+.b-critical,.b-high{background:#3a1219;color:var(--red)} .b-medium{background:#3a2a0e;color:var(--amber)}
+.b-low{background:#132446;color:var(--blue)} .b-informational,.b-none,.b-abstain{background:#1a2233;color:var(--slate)}
+.meter{height:8px;border-radius:5px;background:#1a2233;position:relative;min-width:110px}
+.meter i{position:absolute;top:0;bottom:0;border-radius:5px;background:var(--c,var(--blue))}
+.meter u{position:absolute;top:-3px;bottom:-3px;width:2px;background:#fff;border-radius:2px}
+.tag{font:600 10px var(--mono);padding:2px 6px;border-radius:4px;margin-right:4px;letter-spacing:.06em}
+.t-kev{background:var(--red);color:#1c0509}.t-epss{background:var(--amber);color:#211500}
+.t-chain{background:#5b3df0;color:#fff}.t-exp{background:#1f3a66;color:#9cc0ff}
+
+/* detail overlay */
+#detail{position:fixed;inset:56px 0 0 0;background:var(--bg);display:none;z-index:20;overflow:auto}
+#detail.on{display:block;animation:in .18s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.dhead{position:sticky;top:0;z-index:2;background:rgba(11,14,20,.95);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:16px 28px;display:flex;gap:16px;align-items:center}
+.dhead h1{margin:0;font:700 22px var(--mono)}
+.dbody{max-width:1200px;margin:0 auto;padding:24px 28px 80px;display:grid;gap:18px}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.tabs button{background:none;border:0;padding:10px 14px;color:var(--dim);border-bottom:2px solid transparent}
+.tabs button.on{color:var(--text);border-color:var(--blue)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card.paper{background:var(--paper);color:var(--ink);border-color:#cfd6e3}
+.card.paper h3,.card.paper .lbl{color:#4a566d}
+h3{margin:0 0 12px;font:600 12px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--dim)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px}
+.stack{display:flex;height:22px;border-radius:6px;overflow:hidden;background:#1a2233}
+.stack i{display:block;height:100%;cursor:pointer;min-width:2px;transition:filter .15s}
+.stack i:hover{filter:brightness(1.3)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:10px;font-size:12px;color:var(--dim)}
+.legend b{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.fields{display:grid;grid-template-columns:200px 1fr;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.fields>div{background:var(--panel);padding:8px 12px;word-break:break-word}
+.fields>div:nth-child(odd){color:var(--dim);font-size:12px;font-family:var(--mono)}
+.card.paper .fields{background:#d6dce8;border-color:#d6dce8}
+.card.paper .fields>div{background:#fff}.card.paper .fields>div:nth-child(odd){color:#54607a}
+.pill{display:inline-block;background:#1a2233;border:1px solid var(--line2);border-radius:6px;padding:2px 8px;margin:2px 4px 2px 0;font:12px var(--mono)}
+a.ref{color:#8fb4ff;text-decoration:none;word-break:break-all} a.ref:hover{text-decoration:underline}
+.empty{color:var(--faint);padding:30px;text-align:center}
+.err{color:var(--red);background:#2a0d13;border:1px solid #5a1a25;padding:12px 14px;border-radius:8px}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font:12px/1.5 var(--mono);color:#b9c4dc}
+
+/* graph */
+svg text{font-family:var(--mono);font-size:11px;fill:var(--text)}
+.gwrap{background:radial-gradient(circle at 50% 40%,#101a2c,#0B0E14);border:1px solid var(--line);border-radius:12px;height:min(70vh,640px)}
+.node circle{stroke:#0B0E14;stroke-width:2}.node{cursor:pointer}
+.edge{stroke:#2a3550;stroke-width:1.5}.edge.hot{stroke:var(--red);stroke-width:2.5;stroke-dasharray:6 4;animation:dash 1.2s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-20}}
+
+/* approval cards */
+.acards{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:16px}
+textarea{width:100%;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;color:var(--text);font:13px var(--sans);min-height:56px}
+@media(max-width:900px){main{grid-template-columns:1fr}aside{display:none}.fields{grid-template-columns:120px 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">RAVEN<small>Exposure intelligence for the estate</small></div>
+  <nav id="nav">
+    <button data-v="command" class="on">Command</button>
+    <button data-v="chains">Chains</button>
+    <button data-v="approvals">Approvals <span id="apn" class="mono"></span></button>
+    <button data-v="ops">Ops</button>
+  </nav>
+  <div class="grow"></div>
+  <div class="tok"><span class="dot" id="conn"></span>
+    <input id="tok" type="password" placeholder="bearer token" autocomplete="off">
+    <button class="btn" id="go">Connect</button></div>
+</header>
+
+<main>
+  <div>
+    <section class="view on" id="v-command">
+      <div class="bar">
+        <input type="search" id="q" placeholder="Search CVE, asset, title…">
+        <button class="chip" data-f="kev">KEV only</button>
+        <button class="chip" data-f="exposed">Internet-exposed</button>
+        <button class="chip" data-f="chains">Chains only</button>
+        <select id="band" class="chip"><option value="">All bands</option><option>critical</option><option>high</option><option>medium</option><option>low</option><option>informational</option></select>
+        <span class="sub mono" id="count"></span>
+      </div>
+      <div id="msg"></div>
+      <table id="tbl" style="display:none"><thead><tr><th>Score</th><th>CVE</th><th>Asset</th><th>Band</th><th>Signals</th><th>Confidence</th></tr></thead><tbody id="rows"></tbody></table>
+    </section>
+    <section class="view" id="v-chains"><h2>Exploit chains</h2><div id="chains"></div></section>
+    <section class="view" id="v-approvals"><h2>Approval queue</h2><div id="appr" class="acards"></div></section>
+    <section class="view" id="v-ops"><h2>Pipeline &amp; feed health</h2><div id="ops"></div></section>
+  </div>
+  <aside>
+    <h2>Autonomy</h2>
+    <div class="ladder" id="ladder"></div>
+    <h2 style="margin-top:22px">Pipeline</h2>
+    <div class="kv" id="kv"></div>
+  </aside>
+</main>
+
+<div id="detail"></div>
+
+<script>
+"use strict";
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let TOKEN=sessionStorage.getItem("raven_tok")||"", FIND=[], FILT={kev:false,exposed:false,chains:false};
+
+async function api(path,opt={}){
+  const r=await fetch(path,{...opt,headers:{"Authorization":"Bearer "+TOKEN,"Content-Type":"application/json",...(opt.headers||{})}});
+  if(r.status===401||r.status===403) throw new Error("Token rejected. Check the value and connect again.");
+  if(!r.ok) throw new Error(path+" → HTTP "+r.status);
+  return r.json();
+}
+const rowsOf=d=>Array.isArray(d)?d:(d&&(d.findings||d.items||d.results||d.data||d.paths||d.queue||d.records))||[];
+const num=(...v)=>{for(const x of v){const n=Number(x);if(x!==undefined&&x!==null&&x!==""&&!isNaN(n))return n}return null};
+const pick=(o,...k)=>{for(const x of k){if(o&&o[x]!==undefined&&o[x]!==null&&o[x]!=="")return o[x]}return undefined};
+const bandOf=f=>String(pick(f,"band","severity","priority")||"informational").toLowerCase();
+const bandColor=b=>({critical:"var(--red)",high:"var(--red)",medium:"var(--amber)",low:"var(--blue)"}[b]||"var(--slate)");
+
+/* nav */
+$$("#nav button").forEach(b=>b.onclick=()=>show(b.dataset.v));
+function show(v){
+  $$("#nav button").forEach(x=>x.classList.toggle("on",x.dataset.v===v));
+  $$(".view").forEach(x=>x.classList.toggle("on",x.id==="v-"+v));
+  closeDetail();
+  if(v==="chains")loadChains(); if(v==="approvals")loadAppr(); if(v==="ops")loadOps();
+}
+
+/* connect */
+$("#go").onclick=connect; $("#tok").onkeydown=e=>{if(e.key==="Enter")connect()};
+async function connect(){
+  const t=$("#tok").value.trim(); if(t){TOKEN=t;sessionStorage.setItem("raven_tok",t);$("#tok").value=""}
+  if(!TOKEN){$("#msg").innerHTML='<div class="empty">Enter your API token to load the queue.</div>';return}
+  try{ await Promise.all([loadFindings(),loadOverview()]); $("#conn").className="dot ok"; }
+  catch(e){ $("#conn").className="dot"; $("#msg").innerHTML='<div class="err">'+esc(e.message)+'</div>'; $("#tbl").style.display="none" }
+}
+
+/* overview + ladder */
+async function loadOverview(){
+  const o=await api("/api/overview"), g=(...k)=>num(...k.map(x=>o[x]??(o.pipeline&&o.pipeline[x])??(o.counts&&o.counts[x])))??0;
+  const ab=g("abstained","abstain"), an=g("analyze","analyzing","open_findings","findings_open"), ac=g("awaiting_approval","awaiting_person","action","awaiting");
+  const rung=(n,c,l,d)=>`<div class="rung" style="--c:${c}"><b>${l}</b><div class="n">${n}</div><span>${d}</span></div>`;
+  $("#ladder").innerHTML=rung(ab,"var(--slate)","ABSTAIN","insufficient evidence")+rung(an,"var(--amber)","ANALYZE","scored, under watch")+rung(ac,"var(--red)","ACTION","waiting on a person");
+  $("#apn").textContent=ac?("("+ac+")"):"";
+  const flat={};(function w(x,p){for(const k in x){const v=x[k];if(v&&typeof v==="object"&&!Array.isArray(v))w(v,k+".");else if(typeof v!=="object")flat[p+k]=v}})(o,"");
+  $("#kv").innerHTML=Object.entries(flat).filter(([k,v])=>typeof v==="number").slice(0,14).map(([k,v])=>`<div>${esc(k.replace(/_/g," "))}</div><div>${esc(v)}</div>`).join("")||'<div class="sub">no counters</div>';
+}
+
+/* findings */
+async function loadFindings(){
+  FIND=rowsOf(await api("/api/findings?limit=500")); renderRows();
+}
+function sig(f){const t=[];
+  if(pick(f,"kev","is_kev"))t.push('<span class="tag t-kev">KEV</span>');
+  const e=num(f.epss_percentile,f.epss,f.epss_score); if(e&&e>=0.5)t.push('<span class="tag t-epss">EPSS '+(e<=1?Math.round(e*100)+"%":e)+"</span>");
+  if(pick(f,"in_chain","chain","chain_id","is_chain")||(f.chains&&f.chains.length))t.push('<span class="tag t-chain">CHAIN</span>');
+  if(pick(f,"internet_exposed","exposed"))t.push('<span class="tag t-exp">EXPOSED</span>');
+  return t.join("")}
+function renderRows(){
+  const q=$("#q").value.toLowerCase(), band=$("#band").value;
+  const list=FIND.filter(f=>{
+    if(band&&bandOf(f)!==band)return false;
+    if(FILT.kev&&!pick(f,"kev","is_kev"))return false;
+    if(FILT.exposed&&!pick(f,"internet_exposed","exposed"))return false;
+    if(FILT.chains&&!(pick(f,"in_chain","chain","chain_id","is_chain")||(f.chains&&f.chains.length)))return false;
+    return !q||JSON.stringify(f).toLowerCase().includes(q)});
+  $("#count").textContent=list.length+" of "+FIND.length;
+  if(!list.length){$("#tbl").style.display="none";$("#msg").innerHTML='<div class="empty">'+(FIND.length?"No findings match these filters.":"Nothing here yet. The pipeline fills this once the crawler and the graph engine have both run.")+"</div>";return}
+  $("#msg").innerHTML="";$("#tbl").style.display="";
+  $("#rows").innerHTML=list.map((f,i)=>{
+    const s=num(f.score,f.fused_score,f.risk_score)??0, c=num(f.confidence,f.conf), b=bandOf(f);
+    const lo=num(f.score_low,f.ci_low,f.lower), hi=num(f.score_high,f.ci_high,f.upper), max=Math.max(100,s,hi||0);
+    const meter=`<div class="meter" style="--c:${bandColor(b)}"><i style="left:${lo!=null?(lo/max*100):0}%;right:${100-(hi!=null?hi/max*100:s/max*100)}%;opacity:${lo!=null?.45:1}"></i><u style="left:${s/max*100}%"></u></div>`;
+    return `<tr class="row" data-i="${FIND.indexOf(f)}"><td class="mono" style="font-size:18px;font-weight:700">${s.toFixed(1)}</td>
+      <td><div class="cve">${esc(f.cve_id)}</div><div class="sub">${esc((f.title||"").slice(0,70))}</div></td>
+      <td><div>${esc(f.asset_id||f.asset)}</div><div class="sub">${esc(f.hostname||"")}</div></td>
+      <td><span class="band b-${b}">${esc(b)}</span></td><td>${sig(f)}</td>
+      <td style="min-width:150px">${meter}<div class="sub mono" style="margin-top:4px">${c!=null?(c<=1?Math.round(c*100)+"%":c)+" confidence":"—"}</div></td></tr>`}).join("");
+  $$("#rows tr").forEach(tr=>tr.onclick=()=>openDetail(FIND[+tr.dataset.i]));
+}
+$("#q").oninput=renderRows; $("#band").onchange=renderRows;
+$$(".chip[data-f]").forEach(c=>c.onclick=()=>{FILT[c.dataset.f]=!FILT[c.dataset.f];c.classList.toggle("on",FILT[c.dataset.f]);renderRows()});
+
+/* detail */
+const CATS=[
+ ["Score & risk",/score|band|confidence|priority|rank|fused|abstain|verdict|reason|weight|interval|ci_|lower|upper/i],
+ ["CVSS",/cvss|severity|vector|attack_(vector|complexity)|privileges|user_interaction/i],
+ ["Exploitability",/epss|kev|exploit|maturity|poc|weapon|due_date/i],
+ ["Weakness & technique",/cwe|capec|technique|attack_t|mitre|tactic/i],
+ ["Asset & exposure",/asset|hostname|environment|criticality|exposed|zone|owner|control|connects|cpe_uris_asset|kind/i],
+ ["Products & packages",/cpe|package|product|vendor|version|affected/i],
+ ["References & advisories",/reference|advis|url|link|patch|vendor_advisor/i],
+ ["Provenance",/provenance|source|trust|doc_id|normalized|ingest|model|lineage|timestamp|published|modified|created|updated|_at$/i],
+];
+function fmt(v){
+  if(v===null||v===undefined||v==="")return '<span class="sub">—</span>';
+  if(typeof v==="boolean")return v?'<span class="pill" style="color:var(--red)">yes</span>':'<span class="pill">no</span>';
+  if(Array.isArray(v)){ if(!v.length)return '<span class="sub">none</span>';
+    return v.map(x=>typeof x==="object"?(x&&x.url?`<div><a class="ref" target="_blank" rel="noopener noreferrer" href="${esc(x.url)}">${esc(x.url)}</a></div>`:`<pre>${esc(JSON.stringify(x,null,1))}</pre>`):(/^https?:\/\//.test(x)?`<div><a class="ref" target="_blank" rel="noopener noreferrer" href="${esc(x)}">${esc(x)}</a></div>`:`<span class="pill">${esc(x)}</span>`)).join("")}
+  if(typeof v==="object")return `<pre>${esc(JSON.stringify(v,null,1))}</pre>`;
+  if(typeof v==="number")return `<span class="mono">${esc(v)}</span>`;
+  if(/^https?:\/\//.test(v))return `<a class="ref" target="_blank" rel="noopener noreferrer" href="${esc(v)}">${esc(v)}</a>`;
+  return esc(v)}
+function fieldsBlock(o,paper){
+  const ks=Object.keys(o); if(!ks.length)return '<div class="empty">No data in this category.</div>';
+  return '<div class="fields">'+ks.map(k=>`<div>${esc(k)}</div><div>${fmt(o[k])}</div>`).join("")+"</div>"}
+function flatten(o,p="",out={}){ for(const k in (o||{})){const v=o[k];
+  if(v&&typeof v==="object"&&!Array.isArray(v)&&Object.keys(v).length<25)flatten(v,p+k+".",out); else out[p+k]=v} return out}
+
+async function openDetail(f){
+  const d=$("#detail"); d.classList.add("on");
+  const cve=f.cve_id, asset=f.asset_id||f.asset, b=bandOf(f);
+  d.innerHTML=`<div class="dhead"><button class="btn ghost" id="back">← Back</button><h1>${esc(cve)}</h1>
+   <span class="band b-${b}">${esc(b)}</span><span class="sub">on <b class="mono">${esc(asset)}</b></span></div>
+   <div class="dbody"><div class="empty">Loading evidence…</div></div>`;
+  $("#back").onclick=closeDetail;
+  let full={}; try{ full=await api(`/api/finding/${encodeURIComponent(cve)}/${encodeURIComponent(asset)}`) }catch(e){
+    $(".dbody",d).innerHTML='<div class="err">'+esc(e.message)+"</div>"; return}
+  const all=flatten({...f,...full});
+  const groups={}; CATS.forEach(c=>groups[c[0]]={}); groups["More"]={};
+  Object.keys(all).forEach(k=>{ const hit=CATS.find(c=>c[1].test(k)); (groups[hit?hit[0]:"More"])[k]=all[k] });
+  // score composition
+  const comp=[["CVSS",num(all.cvss_base,all["components.cvss"],all["signals.cvss"]),"var(--red)"],
+    ["EPSS",num(all.epss_score,all["components.epss"],all["signals.epss"]),"var(--amber)"],
+    ["KEV",all.kev?1:num(all["components.kev"]),"#ff7a3d"],["Criticality",num(all.criticality,all["components.criticality"]),"var(--blue)"],
+    ["Chain",num(all.chain_score,all["components.chain"],all["gnn_score"]),"#7d5cff"]].filter(x=>x[1]);
+  const tot=comp.reduce((a,x)=>a+x[1],0)||1;
+  const stack=comp.length?`<div class="stack">${comp.map(x=>`<i style="width:${x[1]/tot*100}%;background:${x[2]}" title="${x[0]}: ${x[1]}"></i>`).join("")}</div>
+    <div class="legend">${comp.map(x=>`<span><b style="background:${x[2]}"></b>${x[0]} <span class="mono">${(+x[1]).toFixed(2)}</span></span>`).join("")}</div>`:'<div class="sub">The API did not return a per-signal breakdown for this finding.</div>';
+  const desc=all.description||all.title||"";
+  const tabs=["Overview",...Object.keys(groups).filter(k=>Object.keys(groups[k]).length),"Attack path","Raw"];
+  const body=$(".dbody",d);
+  body.innerHTML=`<div class="grid2">
+     <div class="card"><h3>Why it scored this way</h3>${stack}
+       <div style="margin-top:14px;display:flex;gap:26px;flex-wrap:wrap">
+         <div><div class="sub">Fused score</div><div class="mono" style="font-size:34px;font-weight:700">${(num(all.score,all.fused_score,all.risk_score)??0).toFixed(1)}</div></div>
+         <div><div class="sub">Confidence</div><div class="mono" style="font-size:34px;font-weight:700">${(()=>{const c=num(all.confidence);return c==null?"—":(c<=1?Math.round(c*100)+"%":c)})()}</div></div></div></div>
+     <div class="card paper"><h3>Summary</h3><div style="line-height:1.6">${esc(desc)||"<span class=lbl>No description supplied.</span>"}</div></div></div>
+   <div class="tabs" id="dt">${tabs.map((t,i)=>`<button data-t="${esc(t)}" class="${i?"":"on"}">${esc(t)}</button>`).join("")}</div>
+   <div id="tabbody"></div>`;
+  const draw=t=>{
+    const tb=$("#tabbody",d);
+    if(t==="Overview"){ tb.innerHTML='<div class="grid2">'+Object.keys(groups).filter(k=>Object.keys(groups[k]).length&&k!=="More").slice(0,4).map(k=>`<div class="card"><h3>${esc(k)}</h3>${fieldsBlock(Object.fromEntries(Object.entries(groups[k]).slice(0,8)))}</div>`).join("")+"</div>"}
+    else if(t==="Attack path") drawPath(tb,cve,asset,all);
+    else if(t==="Raw") tb.innerHTML=`<div class="card"><pre>${esc(JSON.stringify({list_row:f,detail:full},null,2))}</pre></div>`;
+    else tb.innerHTML=`<div class="card ${/Reference|Provenance/.test(t)?"":"paper"}"><h3>${esc(t)}</h3>${fieldsBlock(groups[t])}</div>`};
+  $$("#dt button",d).forEach(bt=>bt.onclick=()=>{$$("#dt button",d).forEach(x=>x.classList.remove("on"));bt.classList.add("on");draw(bt.dataset.t)});
+  draw("Overview");
+}
+function closeDetail(){$("#detail").classList.remove("on");$("#detail").innerHTML=""}
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeDetail()});
+
+/* graph drawing (plain SVG, no libraries) */
+function layout(nodes,edges,W,H){
+  nodes.forEach((n,i)=>{const a=i/nodes.length*Math.PI*2;n.x=W/2+Math.cos(a)*W*.3;n.y=H/2+Math.sin(a)*H*.3;n.vx=n.vy=0});
+  const idx=Object.fromEntries(nodes.map(n=>[n.id,n]));
+  for(let it=0;it<260;it++){
+    for(const a of nodes)for(const b of nodes){if(a===b)continue;let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.01,f=2600/d2,d=Math.sqrt(d2);a.vx+=dx/d*f;a.vy+=dy/d*f}
+    for(const e of edges){const a=idx[e.s],b=idx[e.t];if(!a||!b)continue;let dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1,f=(d-110)*.02;a.vx+=dx/d*f;a.vy+=dy/d*f;b.vx-=dx/d*f;b.vy-=dy/d*f}
+    for(const n of nodes){n.vx+=(W/2-n.x)*.004;n.vy+=(H/2-n.y)*.004;n.x+=n.vx*.5;n.y+=n.vy*.5;n.vx*=.6;n.vy*=.6;n.x=Math.max(50,Math.min(W-50,n.x));n.y=Math.max(30,Math.min(H-30,n.y))}}
+  return idx}
+function svgGraph(nodes,edges){
+  const W=900,H=520; const idx=layout(nodes,edges,W,H);
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+   ${edges.map(e=>idx[e.s]&&idx[e.t]?`<line class="edge ${e.hot?"hot":""}" x1="${idx[e.s].x}" y1="${idx[e.s].y}" x2="${idx[e.t].x}" y2="${idx[e.t].y}"/>`:"").join("")}
+   ${nodes.map(n=>`<g class="node"><circle cx="${n.x}" cy="${n.y}" r="${n.r||13}" fill="${n.c||"#3a4661"}"><title>${esc(n.id)}</title></circle>
+     <text x="${n.x}" y="${n.y+(n.r||13)+14}" text-anchor="middle">${esc(String(n.label||n.id).slice(0,22))}</text></g>`).join("")}</svg>`}
+function pathToGraph(p){
+  // accepts many shapes: {nodes:[],edges:[]} | {path:[..]} | {steps:[..]} | {assets:[..]} | array of ids
+  const nodes=[],edges=[],seen={};
+  const add=(id,extra={})=>{id=String(id);if(!seen[id]){seen[id]=1;nodes.push({id,label:id,c:"#3a4661",...extra})}};
+  const seq=p.nodes||p.path||p.steps||p.assets||p.chain||(Array.isArray(p)?p:[]);
+  seq.forEach((n,i)=>{const id=typeof n==="object"?(n.id||n.asset_id||n.cve_id||n.name||JSON.stringify(n)):n;
+    add(id,typeof n==="object"?{c:(n.cve_id||n.severity==="critical")?"#ff4d5e":"#3a4661"}:{});
+    if(i)edges.push({s:String(typeof seq[i-1]==="object"?(seq[i-1].id||seq[i-1].asset_id||seq[i-1].cve_id||seq[i-1].name):seq[i-1]),t:String(id),hot:true})});
+  (p.edges||[]).forEach(e=>{const s=e.source??e.from??e.s,t=e.target??e.to??e.t;if(s!=null&&t!=null){add(s);add(t);edges.push({s:String(s),t:String(t),hot:!!(e.hot||e.feasibility>.5||e.weight>.5)})}});
+  return {nodes,edges}}
+async function drawPath(tb,cve,asset,all){
+  tb.innerHTML='<div class="empty">Loading attack paths…</div>';
+  let ps=[]; try{ ps=rowsOf(await api("/api/paths")) }catch(e){ tb.innerHTML='<div class="err">'+esc(e.message)+"</div>";return}
+  const mine=ps.filter(p=>JSON.stringify(p).includes(cve)||JSON.stringify(p).includes(asset));
+  if(!mine.length){tb.innerHTML='<div class="card"><div class="empty">No predicted attack path involves this finding.</div></div>';return}
+  tb.innerHTML=mine.slice(0,4).map((p,i)=>{const g=pathToGraph(p);return `<div class="card" style="margin-bottom:14px"><h3>Path ${i+1}</h3><div class="gwrap" style="height:340px">${svgGraph(g.nodes,g.edges)}</div>
+     <details style="margin-top:10px"><summary class="sub">raw path data</summary><pre>${esc(JSON.stringify(p,null,2))}</pre></details></div>`}).join("")}
+
+/* chains, approvals, ops */
+async function loadChains(){
+  const el=$("#chains"); el.innerHTML='<div class="empty">Loading…</div>';
+  try{ const ps=rowsOf(await api("/api/paths"));
+    if(!ps.length){el.innerHTML='<div class="empty">No predicted exploit chains yet.</div>';return}
+    const nodes=[],edges=[],seen={};
+    ps.forEach(p=>{const g=pathToGraph(p);g.nodes.forEach(n=>{if(!seen[n.id]){seen[n.id]=1;nodes.push(n)}});g.edges.forEach(e=>edges.push(e))});
+    el.innerHTML=`<div class="gwrap">${svgGraph(nodes,edges)}</div><p class="sub">${nodes.length} nodes · ${edges.length} links · red dashed = predicted feasible chain</p>`
+  }catch(e){el.innerHTML='<div class="err">'+esc(e.message)+"</div>"}}
+async function loadAppr(){
+  const el=$("#appr"); el.innerHTML='<div class="empty">Loading…</div>';
+  try{ const qs=rowsOf(await api("/api/queue"));
+    if(!qs.length){el.innerHTML='<div class="empty">Nothing is waiting on a person.</div>';return}
+    el.innerHTML=qs.map((q,i)=>{const id=q.approval_id||q.id;return `<div class="card"><h3>${esc(q.cve_id||q.title||"Proposed action")} ${q.asset_id?"· "+esc(q.asset_id):""}</h3>
+      ${fieldsBlock(flatten(q))}
+      <textarea id="c${i}" placeholder="Comment (required to reject)"></textarea>
+      <div style="display:flex;gap:10px;margin-top:10px"><button class="btn green" data-a="approve" data-i="${i}">Approve</button><button class="btn red" data-a="reject" data-i="${i}">Reject</button></div><div class="sub" id="r${i}"></div></div>`}).join("");
+    $$("#appr button").forEach(b=>b.onclick=async()=>{
+      const i=+b.dataset.i,q=qs[i],id=q.approval_id||q.id,com=$("#c"+i).value.trim();
+      if(b.dataset.a==="reject"&&!com){$("#r"+i).textContent="A comment is required to reject.";return}
+      try{await api("/api/queue/"+encodeURIComponent(id),{method:"POST",body:JSON.stringify({approve:b.dataset.a==="approve",analyst:"console",reason:com})});$("#r"+i).textContent="Recorded: "+b.dataset.a;loadOverview()}
+      catch(e){$("#r"+i).textContent=e.message}})
+  }catch(e){el.innerHTML='<div class="err">'+esc(e.message)+"</div>"}}
+async function loadOps(){
+  const el=$("#ops"); el.innerHTML='<div class="empty">Loading…</div>';
+  try{ const o=await api("/api/overview"); el.innerHTML='<div class="card">'+fieldsBlock(flatten(o))+"</div>" }
+  catch(e){el.innerHTML='<div class="err">'+esc(e.message)+"</div>"}}
+
+if(TOKEN)connect(); else $("#msg").innerHTML='<div class="empty">Connect with your API token to load the queue.</div>';
+</script>
+</body>
+</html>

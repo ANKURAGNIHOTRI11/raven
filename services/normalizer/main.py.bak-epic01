@@ -1,0 +1,305 @@
+"""Normalization engine + data-contract validator.
+
+This is the choke point described in section 5.2 of the threat model: nothing
+reaches the ontology unless it survives every check here.
+
+  1. Contract validation      - pydantic schema, rejected records to quarantine
+  2. Adversarial screening    - impossible values, trust-weighted field origin,
+                                description length bombs, HTML/script payloads,
+                                identifier spoofing
+  3. Deduplication            - content hash + CVE-level merge
+  4. Field arbitration        - a low-trust media source can add context and
+                                exploit signals but can never overwrite CVSS,
+                                CPE or KEV state set by an authoritative source
+  5. Enrichment               - BERT exploit-maturity, NER product extraction
+  6. Fan-out                  - Postgres (record), OpenSearch (search),
+                                Qdrant (RAG vectors), bus (downstream)
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import re
+from datetime import datetime, timezone
+
+import httpx
+import orjson
+
+from raven_common import bus, db, topics
+from raven_common.models import (
+    NormalizedVulnerability, QuarantineRecord, RawDocument, Reference, SourceClass,
+)
+from raven_common.metrics import ERRORS, QUARANTINED, STAGE_LATENCY
+from raven_common.runtime import bootstrap, run
+
+from enrich import Enricher
+
+SERVICE = "normalizer"
+settings, log = bootstrap(SERVICE)
+enricher = Enricher(settings.classifier_model)
+
+AUTHORITATIVE_ONLY = {"cvss_base", "cvss_vector", "cvss_version", "cpe_uris", "kev", "kev_due_date"}
+SCRIPTY = re.compile(r"<\s*script|javascript:|onerror\s*=|data:text/html", re.I)
+CVE_SHAPE = re.compile(r"^(CVE-\d{4}-\d{4,7}|GHSA-[\w-]{10,}|RHSA-\d{4}:\d+|OSV-\d{4}-\d+)$")
+
+
+class Rejected(Exception):
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(reason)
+        self.reason, self.detail = reason, detail
+
+
+def adversarial_screen(rec: dict, doc: RawDocument) -> None:
+    """Defences against a poisoned or hijacked feed."""
+    cve_id = str(rec.get("cve_id", "")).strip().upper()
+    if not CVE_SHAPE.match(cve_id):
+        raise Rejected("identifier_shape", cve_id[:80])
+
+    # A CVE published in the future, or before the programme existed, is a lie.
+    year = int(cve_id.split("-")[1]) if cve_id.startswith("CVE-") else datetime.now().year
+    if not 1999 <= year <= datetime.now(timezone.utc).year + 1:
+        raise Rejected("implausible_year", cve_id)
+
+    score = float(rec.get("cvss_base") or 0.0)
+    if not 0.0 <= score <= 10.0:
+        raise Rejected("cvss_out_of_range", str(score))
+
+    epss = float(rec.get("epss_score") or 0.0)
+    if not 0.0 <= epss <= 1.0:
+        raise Rejected("epss_out_of_range", str(epss))
+
+    desc = rec.get("description") or ""
+    if len(desc) > 200_000:
+        raise Rejected("description_bomb", f"{len(desc)} chars")
+    if SCRIPTY.search(desc):
+        raise Rejected("active_content", desc[:120])
+
+    # Trust arbitration: a media feed asserting authoritative fields is a
+    # tampering signal, not a data point.
+    if doc.source_class in (SourceClass.MEDIA, SourceClass.COMMUNITY):
+        claimed = AUTHORITATIVE_ONLY & {k for k, v in rec.items() if v not in (None, "", [], 0, 0.0, False)}
+        if doc.source_class is SourceClass.MEDIA and claimed:
+            for field in claimed:
+                rec.pop(field, None)
+
+    if len(rec.get("cpe_uris", []) or []) > 5000:
+        raise Rejected("cpe_flood", str(len(rec["cpe_uris"])))
+
+
+# Fields whose contract default is a non-empty-but-meaningless placeholder -
+# "no severity data" is encoded as the string "none", not as an empty value,
+# so the generic falsy check below can't catch it on its own.
+NO_DATA_SENTINELS = {"severity": "none"}
+
+
+def merge(existing: dict | None, incoming: dict, trust: float, klass: SourceClass) -> dict:
+    """Field-level arbitration weighted by source trust."""
+    if existing is None:
+        out = dict(incoming)
+        out["source_trust"] = trust
+        return out
+    out = dict(existing)
+    prior_trust = float(existing.get("source_trust", 0.0))
+    for key, value in incoming.items():
+        # Plain falsiness catches None/""/[]/{} *and* 0/0.0 - the latter two
+        # matter because cvss_base and epss_score/percentile default to 0.0
+        # when a source (KEV, EPSS-only records, etc.) simply doesn't carry
+        # that field. Treating that default as "real data" let a low-info
+        # source with trust >= the stored trust silently zero out a CVSS
+        # score NVD had already supplied. No field merged here is a
+        # meaningful boolean (kev is handled separately below), so plain
+        # falsiness is safe rather than the narrower (None, "", [], {}) it
+        # replaces.
+        if not value:
+            continue
+        if key in NO_DATA_SENTINELS and value == NO_DATA_SENTINELS[key]:
+            continue
+        if key in AUTHORITATIVE_ONLY and klass not in (SourceClass.AUTHORITATIVE, SourceClass.INTERNAL):
+            continue
+        if isinstance(value, list) and isinstance(out.get(key), list):
+            seen, merged = set(), []
+            for item in list(out[key]) + list(value):
+                marker = orjson.dumps(item, option=orjson.OPT_SORT_KEYS)
+                if marker not in seen:
+                    seen.add(marker)
+                    merged.append(item)
+            out[key] = merged[:500]
+        elif key == "kev":
+            out[key] = bool(out.get(key)) or bool(value)
+        elif trust >= prior_trust or not out.get(key):
+            out[key] = value
+    out["source_trust"] = max(prior_trust, trust)
+    out["provenance"] = sorted(set(out.get("provenance", []) + incoming.get("provenance", [])))[:50]
+    return out
+
+
+async def load_existing(cve_id: str) -> dict | None:
+    async with db.conn() as c:
+        row = await c.fetchrow("SELECT * FROM vulnerabilities WHERE cve_id=$1", cve_id)
+    if not row:
+        return None
+    d = dict(row)
+    d["references"] = orjson.loads(d.pop("references_json") or b"[]") if isinstance(d.get("references_json"), (bytes, str)) else (d.pop("references_json", []) or [])
+    return d
+
+
+async def persist(v: NormalizedVulnerability) -> None:
+    async with db.conn() as c:
+        await c.execute(
+            """INSERT INTO vulnerabilities (cve_id,title,description,published,modified,
+               cvss_vector,cvss_base,cvss_version,severity,cwe_ids,capec_ids,
+               attack_techniques,cpe_uris,affected_packages,epss_score,epss_percentile,
+               kev,kev_due_date,exploit_maturity,references_json,provenance,source_trust,
+               ingest_confidence,normalized_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+                       $20::jsonb,$21,$22,$23,now())
+               ON CONFLICT (cve_id) DO UPDATE SET
+                 title=EXCLUDED.title, description=EXCLUDED.description,
+                 published=COALESCE(EXCLUDED.published, vulnerabilities.published),
+                 modified=EXCLUDED.modified, cvss_vector=EXCLUDED.cvss_vector,
+                 cvss_base=EXCLUDED.cvss_base, severity=EXCLUDED.severity,
+                 cwe_ids=EXCLUDED.cwe_ids, cpe_uris=EXCLUDED.cpe_uris,
+                 affected_packages=EXCLUDED.affected_packages,
+                 epss_score=EXCLUDED.epss_score, epss_percentile=EXCLUDED.epss_percentile,
+                 kev=vulnerabilities.kev OR EXCLUDED.kev,
+                 kev_due_date=COALESCE(EXCLUDED.kev_due_date, vulnerabilities.kev_due_date),
+                 exploit_maturity=EXCLUDED.exploit_maturity,
+                 references_json=EXCLUDED.references_json,
+                 provenance=EXCLUDED.provenance, source_trust=EXCLUDED.source_trust,
+                 ingest_confidence=EXCLUDED.ingest_confidence, normalized_at=now()""",
+            v.cve_id, v.title, v.description, v.published, v.modified, v.cvss_vector,
+            v.cvss_base, v.cvss_version, v.severity, v.cwe_ids, v.capec_ids,
+            v.attack_techniques, v.cpe_uris, v.affected_packages, v.epss_score,
+            v.epss_percentile, v.kev, v.kev_due_date, v.exploit_maturity,
+            orjson.dumps([r.model_dump() for r in v.references]).decode(),
+            v.provenance, v.source_trust, v.ingest_confidence,
+        )
+
+
+async def match_assets(v: NormalizedVulnerability) -> list[str]:
+    """Join the CVE to the inventory on CPE or package identity."""
+    if not (v.cpe_uris or v.affected_packages):
+        return []
+    vendors = {u.split(":")[3] for u in v.cpe_uris if len(u.split(":")) > 4}
+    pkgs = {p.split(":")[-1].lower() for p in v.affected_packages}
+    async with db.conn() as c:
+        rows = await c.fetch(
+            """SELECT asset_id, packages, cpe_uris FROM assets
+               WHERE packages && $1::text[] OR cpe_uris && $2::text[]
+                  OR EXISTS (SELECT 1 FROM unnest(packages) p
+                             WHERE lower(split_part(p, ':', 2)) = ANY($3::text[]))""",
+            v.affected_packages, v.cpe_uris, list(pkgs) or [""],
+        )
+        matched = []
+        for r in rows:
+            fid = hashlib.sha1(f"{v.cve_id}:{r['asset_id']}".encode()).hexdigest()[:32]
+            await c.execute(
+                """INSERT INTO findings (finding_id, cve_id, asset_id, match_reason)
+                   VALUES ($1,$2,$3,$4)
+                   ON CONFLICT (cve_id, asset_id) DO UPDATE SET last_seen=now()""",
+                fid, v.cve_id, r["asset_id"], "cpe_or_package",
+            )
+            matched.append(r["asset_id"])
+    if vendors:
+        log.debug("vendor_context", cve=v.cve_id, vendors=sorted(vendors)[:5])
+    return matched
+
+
+async def index_search(client: httpx.AsyncClient, v: NormalizedVulnerability) -> None:
+    try:
+        await client.put(
+            f"{settings.opensearch_url}/raven-vulns/_doc/{v.cve_id}",
+            json={
+                "cve_id": v.cve_id, "title": v.title, "description": v.description,
+                "severity": v.severity, "cvss_base": v.cvss_base, "kev": v.kev,
+                "epss_percentile": v.epss_percentile,
+                "packages": v.affected_packages, "cwe_ids": v.cwe_ids,
+                "published": v.published.isoformat() if v.published else None,
+            },
+            timeout=20,
+        )
+    except Exception as exc:
+        log.debug("opensearch_index_failed", error=str(exc)[:160])
+
+
+async def handle(doc: RawDocument, producer: bus.Producer, client: httpx.AsyncClient) -> None:
+    rec = dict(doc.payload or {})
+    try:
+        adversarial_screen(rec, doc)
+    except Rejected as rej:
+        QUARANTINED.labels(doc.source_id, rej.reason).inc()
+        qr = QuarantineRecord(
+            doc_id=doc.doc_id, source_id=doc.source_id, reason=rej.reason,
+            detail=rej.detail, raw_excerpt=orjson.dumps(rec)[:500].decode("utf-8", "replace"),
+        )
+        async with db.conn() as c:
+            await c.execute(
+                "INSERT INTO quarantine (doc_id, source_id, reason, detail, raw_excerpt) "
+                "VALUES ($1,$2,$3,$4,$5)", qr.doc_id, qr.source_id, qr.reason, qr.detail, qr.raw_excerpt,
+            )
+            await c.execute(
+                "UPDATE sources SET quarantined_records=quarantined_records+1 WHERE source_id=$1",
+                doc.source_id,
+            )
+        await producer.send(topics.QUARANTINE, qr, key=doc.source_id)
+        log.info("quarantined", source=doc.source_id, reason=rej.reason)
+        return
+
+    rec["provenance"] = [doc.doc_id]
+    cve_id = str(rec["cve_id"]).upper()
+    existing = await load_existing(cve_id)
+    merged = merge(existing, rec, doc.trust, doc.source_class)
+    merged["cve_id"] = cve_id
+
+    text = f"{merged.get('title','')} {merged.get('description','')}"
+    maturity, conf = await asyncio.to_thread(enricher.exploit_maturity, text)
+    if merged.get("kev"):
+        maturity, conf = "weaponized", 1.0
+    order = {"none": 0, "poc": 1, "functional": 2, "weaponized": 3}
+    if order[maturity] >= order.get(merged.get("exploit_maturity", "none"), 0):
+        merged["exploit_maturity"] = maturity
+    merged["ingest_confidence"] = round(min(1.0, 0.5 * conf + 0.5 * float(doc.trust)), 3)
+
+    products = await asyncio.to_thread(
+        enricher.products, text, merged.get("cpe_uris", []) or []
+    )
+    merged["affected_packages"] = sorted(
+        set(merged.get("affected_packages", []) or []) | {f"product:{p}" for p in products}
+    )[:200]
+    merged["references"] = [
+        Reference.model_validate(r).model_dump() if isinstance(r, dict) else {"url": str(r)}
+        for r in (merged.get("references") or [])
+    ][:60]
+
+    try:
+        vuln = NormalizedVulnerability.model_validate(merged)
+    except Exception as exc:
+        ERRORS.labels(SERVICE, "post_merge_contract").inc()
+        log.warning("post_merge_invalid", cve=cve_id, error=str(exc)[:300])
+        return
+
+    await persist(vuln)
+    assets = await match_assets(vuln)
+    await index_search(client, vuln)
+    await producer.send(topics.NORMALIZED_VULNS, vuln, key=vuln.cve_id)
+    log.info("normalized", cve=vuln.cve_id, severity=vuln.severity,
+             kev=vuln.kev, assets=len(assets), source=doc.source_id)
+
+
+async def main() -> None:
+    await bus.wait_for_bus()
+    producer = await bus.Producer(SERVICE).start()
+    async with httpx.AsyncClient() as client:
+        async for doc in bus.consume(
+            [topics.RAW_DOCUMENTS], "normalizer", RawDocument, SERVICE
+        ):
+            with STAGE_LATENCY.labels(SERVICE, "normalize").time():
+                try:
+                    await handle(doc, producer, client)
+                except Exception as exc:
+                    ERRORS.labels(SERVICE, "handle").inc()
+                    log.warning("normalize_failed", doc=doc.doc_id, error=str(exc)[:300])
+
+
+if __name__ == "__main__":
+    run(main, SERVICE)

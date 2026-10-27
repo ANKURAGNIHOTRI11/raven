@@ -1,0 +1,395 @@
+[
+  {
+    "asset_id": "login01",
+    "hostname": "login01.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 5,
+    "internet_exposed": true,
+    "owner": "hpc-ops",
+    "zone": "dmz",
+    "packages": [
+      "deb:openssh-server",
+      "deb:openssl",
+      "deb:glibc",
+      "deb:slurm-client",
+      "deb:lmod",
+      "deb:apache2",
+      "Ubuntu:22.04:LTS:openssh-server",
+      "openssh-server",
+      "Ubuntu:22.04:LTS:openssl",
+      "openssl",
+      "Ubuntu:22.04:LTS:glibc",
+      "glibc",
+      "Ubuntu:22.04:LTS:slurm-client",
+      "slurm-client",
+      "Ubuntu:22.04:LTS:lmod",
+      "lmod",
+      "Ubuntu:22.04:LTS:apache2",
+      "apache2"
+    ],
+    "cpe_uris": [
+      "cpe:2.3:a:openbsd:openssh:9.6:*:*:*:*:*:*:*",
+      "cpe:2.3:a:openssl:openssl:3.0.13:*:*:*:*:*:*:*"
+    ],
+    "compensating_controls": [
+      "mfa",
+      "ips"
+    ],
+    "connects_to": [
+      "slurmctld",
+      "nfs01",
+      "compute001"
+    ]
+  },
+  {
+    "asset_id": "slurmctld",
+    "hostname": "slurmctld.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 5,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "management",
+    "packages": [
+      "deb:slurm-wlm",
+      "deb:slurmdbd",
+      "deb:mariadb-server",
+      "deb:munge",
+      "deb:openssl",
+      "Ubuntu:22.04:LTS:slurm-wlm",
+      "slurm-wlm",
+      "Ubuntu:22.04:LTS:slurmdbd",
+      "slurmdbd",
+      "Ubuntu:22.04:LTS:mariadb-server",
+      "mariadb-server",
+      "Ubuntu:22.04:LTS:munge",
+      "munge",
+      "Ubuntu:22.04:LTS:openssl",
+      "openssl"
+    ],
+    "cpe_uris": [
+      "cpe:2.3:a:schedmd:slurm:23.11.6:*:*:*:*:*:*:*"
+    ],
+    "compensating_controls": [
+      "segmentation"
+    ],
+    "connects_to": [
+      "compute001",
+      "compute002",
+      "gpu01",
+      "nfs01"
+    ]
+  },
+  {
+    "asset_id": "compute001",
+    "hostname": "cn001.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 3,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "compute",
+    "packages": [
+      "deb:slurm-wlm",
+      "deb:openmpi",
+      "deb:glibc",
+      "deb:apptainer",
+      "deb:libibverbs",
+      "Ubuntu:22.04:LTS:slurm-wlm",
+      "slurm-wlm",
+      "Ubuntu:22.04:LTS:openmpi",
+      "openmpi",
+      "Ubuntu:22.04:LTS:glibc",
+      "glibc",
+      "Ubuntu:22.04:LTS:apptainer",
+      "apptainer",
+      "Ubuntu:22.04:LTS:libibverbs",
+      "libibverbs"
+    ],
+    "compensating_controls": [],
+    "connects_to": [
+      "nfs01",
+      "lustre-mds"
+    ]
+  },
+  {
+    "asset_id": "compute002",
+    "hostname": "cn002.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 3,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "compute",
+    "packages": [
+      "deb:slurm-wlm",
+      "deb:openmpi",
+      "deb:glibc",
+      "deb:apptainer",
+      "Ubuntu:22.04:LTS:slurm-wlm",
+      "slurm-wlm",
+      "Ubuntu:22.04:LTS:openmpi",
+      "openmpi",
+      "Ubuntu:22.04:LTS:glibc",
+      "glibc",
+      "Ubuntu:22.04:LTS:apptainer",
+      "apptainer"
+    ],
+    "compensating_controls": [],
+    "connects_to": [
+      "nfs01",
+      "lustre-mds"
+    ]
+  },
+  {
+    "asset_id": "gpu01",
+    "hostname": "gpu01.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 4,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "compute",
+    "packages": [
+      "deb:nvidia-driver-560",
+      "deb:cuda-toolkit-12-4",
+      "deb:nvidia-container-toolkit",
+      "deb:docker-ce",
+      "deb:slurm-wlm",
+      "Ubuntu:22.04:LTS:nvidia-driver-560",
+      "nvidia-driver-560",
+      "Ubuntu:22.04:LTS:cuda-toolkit-12-4",
+      "cuda-toolkit-12-4",
+      "Ubuntu:22.04:LTS:nvidia-container-toolkit",
+      "nvidia-container-toolkit",
+      "Ubuntu:22.04:LTS:docker-ce",
+      "docker-ce",
+      "Ubuntu:22.04:LTS:slurm-wlm",
+      "slurm-wlm"
+    ],
+    "cpe_uris": [
+      "cpe:2.3:a:nvidia:cuda_toolkit:12.4:*:*:*:*:*:*:*"
+    ],
+    "compensating_controls": [
+      "segmentation"
+    ],
+    "connects_to": [
+      "lustre-mds",
+      "registry01"
+    ]
+  },
+  {
+    "asset_id": "nfs01",
+    "hostname": "nfs01.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 5,
+    "internet_exposed": false,
+    "owner": "storage",
+    "zone": "storage",
+    "packages": [
+      "deb:nfs-kernel-server",
+      "deb:glibc",
+      "deb:openssl",
+      "Ubuntu:22.04:LTS:nfs-kernel-server",
+      "nfs-kernel-server",
+      "Ubuntu:22.04:LTS:glibc",
+      "glibc",
+      "Ubuntu:22.04:LTS:openssl",
+      "openssl"
+    ],
+    "compensating_controls": [
+      "segmentation",
+      "allowlist"
+    ],
+    "connects_to": [
+      "lustre-mds"
+    ]
+  },
+  {
+    "asset_id": "lustre-mds",
+    "hostname": "mds01.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 5,
+    "internet_exposed": false,
+    "owner": "storage",
+    "zone": "storage",
+    "packages": [
+      "deb:lustre-server",
+      "deb:kernel",
+      "deb:libibverbs",
+      "Ubuntu:22.04:LTS:lustre-server",
+      "lustre-server",
+      "Ubuntu:22.04:LTS:kernel",
+      "kernel",
+      "Ubuntu:22.04:LTS:libibverbs",
+      "libibverbs"
+    ],
+    "compensating_controls": [
+      "segmentation"
+    ],
+    "connects_to": []
+  },
+  {
+    "asset_id": "ostack-ctrl",
+    "hostname": "ctrl01.cloud.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 5,
+    "internet_exposed": true,
+    "owner": "cloud",
+    "zone": "dmz",
+    "packages": [
+      "deb:keystone",
+      "deb:nova-api",
+      "deb:neutron-server",
+      "deb:apache2",
+      "deb:mysql-server",
+      "deb:python3-django",
+      "Ubuntu:22.04:LTS:keystone",
+      "keystone",
+      "Ubuntu:22.04:LTS:nova-api",
+      "nova-api",
+      "Ubuntu:22.04:LTS:neutron-server",
+      "neutron-server",
+      "Ubuntu:22.04:LTS:apache2",
+      "apache2",
+      "Ubuntu:22.04:LTS:mysql-server",
+      "mysql-server",
+      "Ubuntu:22.04:LTS:python3-django",
+      "python3-django"
+    ],
+    "cpe_uris": [
+      "cpe:2.3:a:openstack:keystone:2024.1:*:*:*:*:*:*:*"
+    ],
+    "compensating_controls": [
+      "waf",
+      "mfa"
+    ],
+    "connects_to": [
+      "ostack-compute",
+      "registry01"
+    ]
+  },
+  {
+    "asset_id": "ostack-compute",
+    "hostname": "cc01.cloud.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 4,
+    "internet_exposed": false,
+    "owner": "cloud",
+    "zone": "cloud",
+    "packages": [
+      "deb:nova-compute",
+      "deb:libvirt-daemon",
+      "deb:qemu-kvm",
+      "deb:nvidia-driver-560",
+      "Ubuntu:22.04:LTS:nova-compute",
+      "nova-compute",
+      "Ubuntu:22.04:LTS:libvirt-daemon",
+      "libvirt-daemon",
+      "Ubuntu:22.04:LTS:qemu-kvm",
+      "qemu-kvm",
+      "Ubuntu:22.04:LTS:nvidia-driver-560",
+      "nvidia-driver-560"
+    ],
+    "compensating_controls": [
+      "segmentation"
+    ],
+    "connects_to": [
+      "lustre-mds"
+    ]
+  },
+  {
+    "asset_id": "registry01",
+    "hostname": "registry.cluster.local",
+    "kind": "service",
+    "environment": "prod",
+    "criticality": 4,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "management",
+    "packages": [
+      "deb:docker-ce",
+      "oci:registry:2.8.3",
+      "Ubuntu:22.04:LTS:docker-ce",
+      "docker-ce"
+    ],
+    "compensating_controls": [
+      "allowlist"
+    ],
+    "connects_to": [
+      "gpu01",
+      "ostack-compute"
+    ]
+  },
+  {
+    "asset_id": "monitor01",
+    "hostname": "monitor01.cluster.local",
+    "kind": "host",
+    "environment": "prod",
+    "criticality": 3,
+    "internet_exposed": true,
+    "owner": "hpc-ops",
+    "zone": "dmz",
+    "packages": [
+      "deb:apache2",
+      "deb:ganglia-monitor",
+      "deb:nagios4",
+      "deb:grafana",
+      "deb:prometheus",
+      "deb:php",
+      "Ubuntu:22.04:LTS:apache2",
+      "apache2",
+      "Ubuntu:22.04:LTS:ganglia-monitor",
+      "ganglia-monitor",
+      "Ubuntu:22.04:LTS:nagios4",
+      "nagios4",
+      "Ubuntu:22.04:LTS:grafana",
+      "grafana",
+      "Ubuntu:22.04:LTS:prometheus",
+      "prometheus",
+      "Ubuntu:22.04:LTS:php",
+      "php"
+    ],
+    "cpe_uris": [
+      "cpe:2.3:a:grafana:grafana:11.1.0:*:*:*:*:*:*:*"
+    ],
+    "compensating_controls": [
+      "waf"
+    ],
+    "connects_to": [
+      "slurmctld",
+      "login01"
+    ]
+  },
+  {
+    "asset_id": "devbox",
+    "hostname": "dev01.cluster.local",
+    "kind": "host",
+    "environment": "dev",
+    "criticality": 1,
+    "internet_exposed": false,
+    "owner": "hpc-ops",
+    "zone": "lab",
+    "packages": [
+      "deb:gcc",
+      "deb:python3",
+      "deb:openmpi",
+      "deb:docker-ce",
+      "Ubuntu:22.04:LTS:gcc",
+      "gcc",
+      "Ubuntu:22.04:LTS:python3",
+      "python3",
+      "Ubuntu:22.04:LTS:openmpi",
+      "openmpi",
+      "Ubuntu:22.04:LTS:docker-ce",
+      "docker-ce"
+    ],
+    "compensating_controls": [],
+    "connects_to": []
+  }
+]

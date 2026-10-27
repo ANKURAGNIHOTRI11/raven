@@ -1,0 +1,33 @@
+cve_id,current_title,candidate_options,distinct_candidate_count,source_rows,review_status
+CVE-2026-101201,CVE-2026-101201,qt5-qtbase: qt6-qt5compat: qt: Denial of Service via out-of-bounds read in QBinaryJson || qt6: qt: Denial of Service via out-of-bounds read in QBinaryJson,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-106202,CVE-2026-106202,chromium-browser: Uninitialized resource in ANGLE || chromium-browser: angle: Uninitialized resource in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-106215,CVE-2026-106215,chromium-browser: Uninitialized resource in ANGLE || chromium-browser: angle: Uninitialized resource in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-106247,CVE-2026-106247,chromium-browser: Buffer overflow in ANGLE || chromium-browser: angle: Buffer overflow in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-106258,CVE-2026-106258,chromium-browser: Uninitialized resource in ANGLE || chromium-browser: angle: Uninitialized resource in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-106304,CVE-2026-106304,chromium-browser: Out of bounds read in ANGLE || chromium-browser: angle: Out of bounds read in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-110915,CVE-2026-110915,chromium-browser: Use after free in Compositing || chromium-browser: chromium-browser: Use after free in Compositing,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-110919,CVE-2026-110919,chromium-browser: Use after free in V8 || chromium-browser: chromium-browser: Use after free in V8,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-111943,CVE-2026-111943,crypto/x509: golang: crypto/x509: Man-in-the-middle attacks via untrusted intermediate certificates || golang: crypto/x509: Go: crypto/x509: mitigation for security concerns with a specific Certificate Authority,2,7,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113143,CVE-2026-113143,chromium-browser: Memory corruption in ANGLE || chromium-browser: angle: Memory corruption in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113157,CVE-2026-113157,chromium-browser: Information leak in ANGLE || chromium-browser: angle: Information leak in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113200,CVE-2026-113200,chromium-browser: Use after free in ANGLE || chromium-browser: angle: Use after free in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113210,CVE-2026-113210,chromium-browser: Use after free in ANGLE || chromium-browser: angle: Use after free in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113234,CVE-2026-113234,chromium-browser: Memory corruption in ANGLE || chromium-browser: angle: Memory corruption in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113242,CVE-2026-113242,chromium-browser: Memory corruption in ANGLE || chromium-browser: angle: Memory corruption in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113250,CVE-2026-113250,chromium-browser: Use after free in ANGLE || chromium-browser: angle: Use after free in ANGLE || chromium-browser: chromium-browser: Use after free in ANGLE,3,3,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113252,CVE-2026-113252,chromium-browser: Improper input validation in ANGLE || chromium-browser: angle: Improper input validation in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113266,CVE-2026-113266,chromium-browser: Memory corruption in ANGLE || chromium-browser: angle: Memory corruption in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113273,CVE-2026-113273,chromium-browser: Memory corruption in ANGLE || chromium-browser: angle: Memory corruption in ANGLE,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-113341,CVE-2026-113341,chromium-browser: Memory corruption in Skia || chromium-browser: skia: Memory corruption in Skia,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-78669,CVE-2026-78669,net/http: net/http/internal/http2: golang.org/x/net/http2: net/http: Denial of Service via excessive HTTP/2 SETTINGS frames || net/http: net/http/internal/http2: golang: golang.org/x/net/http2: net/http: Denial of Service via excessive HTTP/2 SETTINGS frames,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-8168,CVE-2026-8168,qt5-qtsvg: qt6-qtsvg: qt: Denial of Service via deeply nested SVG elements || qt: qt5: qt6: qt: Denial of Service via deeply nested SVG elements,2,4,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-84180,CVE-2026-84180,org.apache.camel/camel-knative: Apache Camel Knative: Information disclosure via error responses || org.apache.camel/camel-knative: camel-knative: Information disclosure via error responses,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-93524,CVE-2026-93524,xorg-x11-server: XKB SetMap Key Width/Action Count Desync Out-Of-Bounds Read || xorg-x11-server: xorg-x11-server: information disclosure via crafted keyboard mapping requests,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-93536,CVE-2026-93536,xorg-x11-server: GestureBuildSprite Use-After-Free || xorg-x11-server: xorg-x11-server: Denial of Service via use-after-free in gesture event handling,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-94055,CVE-2026-94055,exim: Exim: Use-after-free vulnerability in GnuTLS TLS settings leading to denial of service || exim: gnutls: Exim: Use-after-free vulnerability in GnuTLS TLS settings leading to denial of service,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95297,CVE-2026-95297,chromium-browser: Missing authorization in Contextual Tasks || chromium-browser: chromium-browser: Missing authorization in Contextual Tasks,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95301,CVE-2026-95301,chromium-browser: Missing authorization in Extensions || chromium-browser: chromium-browser: Missing authorization in Extensions,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95304,CVE-2026-95304,chromium-browser: Out of bounds write in V8 || chromium-browser: chromium-browser: Out of bounds write in V8,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95306,CVE-2026-95306,chromium-browser: Type confusion in V8 || chromium-browser: chromium-browser: Type confusion in V8,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95316,CVE-2026-95316,chromium-browser: Unchecked return value in Performance || chromium-browser: chromium-browser: Unchecked return value in Performance,2,2,MULTIPLE_DISTINCT_CANDIDATES_REVIEW
+CVE-2026-95342,CVE-2026-95342,chromium-browser: Missing authorization in V8 || chromium-browser: chromium-browser: Missing authorization in V8,2,3,MULTIPLE_DISTINCT_CANDIDATES_REVIEW

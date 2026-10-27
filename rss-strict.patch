@@ -1,0 +1,106 @@
+diff -ruN a/infra/postgres/migrations/005_disable_non_feeds.sql b/infra/postgres/migrations/005_disable_non_feeds.sql
+--- a/infra/postgres/migrations/005_disable_non_feeds.sql	1970-01-01 00:00:00.000000000 +0000
++++ b/infra/postgres/migrations/005_disable_non_feeds.sql	2026-10-13 05:20:44.056087847 +0000
+@@ -0,0 +1,19 @@
++-- Three sources the crawler logged as healthy harvests of 0 records for days,
++-- found with deploy/diagnose_feeds.py. All three served an HTML page with HTTP
++-- 200, so nothing in the registry ever showed a failure.
++--
++--   mandiant     URL was a guess and returns the blog's HTML page, not a feed.
++--   msrc_blog    msrc.microsoft.com/blog/feed now redirects to an HTML page.
++--   packetstorm  redirects to a terms-of-service acceptance page before serving
++--                RSS. Not worked around - re-enable only if the terms are
++--                accepted deliberately and a stable feed URL is confirmed.
++--
++-- No verified replacement URLs. Microsoft coverage should come from the MSRC
++-- CVRF/CSAF API (the 'msrc' source), not the blog.
++--
++--   docker compose exec -T postgres psql -U raven raven < infra/postgres/migrations/005_disable_non_feeds.sql
++
++UPDATE sources
++   SET enabled = false,
++       last_error = 'disabled: URL serves an HTML page, not a feed (see migration 005)'
++ WHERE source_id IN ('mandiant', 'msrc_blog', 'packetstorm');
+diff -ruN a/services/crawler/parsers.py b/services/crawler/parsers.py
+--- a/services/crawler/parsers.py	2026-10-13 05:20:49.359082190 +0000
++++ b/services/crawler/parsers.py	2026-10-13 05:20:22.656160226 +0000
+@@ -196,6 +196,19 @@
+ RSS_MAX_CVES_PER_ITEM = 100  # a roundup naming hundreds of CVEs must not flood the bus
+ RSS_CONTEXT_WINDOW = 200     # characters either side of a mention that are considered
+ _EXPLOIT_RE = re.compile(r"\b(exploited|in the wild|poc)\b", re.I)
++_FEED_ROOTS = frozenset({"rss", "feed", "RDF"})   # RSS 2.0 / Atom / RSS 1.0
++
++
++class NotAFeed(ValueError):
++    """The document is not an RSS/Atom feed - typically an HTML challenge,
++    consent or moved-page response served with HTTP 200. Raised rather than
++    returning [] so the crawler records a failure (quarantine excerpt, failure
++    count, circuit breaker) instead of logging a healthy harvest of 0 records,
++    which is indistinguishable from a feed that simply names no CVEs."""
++
++
++def _peek(raw: bytes, n: int = 60) -> str:
++    return " ".join(raw[:n].decode("utf-8", "replace").split())
+ 
+ 
+ def _plain(markup: str) -> str:
+@@ -220,8 +233,11 @@
+     """
+     try:
+         root = ET.fromstring(raw)
+-    except ET.ParseError:
+-        return []
++    except ET.ParseError as exc:
++        raise NotAFeed(f"not valid XML ({str(exc)[:60]}); starts {_peek(raw)!r}") from exc
++    root_name = root.tag.split("}")[-1]
++    if root_name not in _FEED_ROOTS:
++        raise NotAFeed(f"root element <{root_name[:30]}> is not a feed; starts {_peek(raw)!r}")
+     out = []
+     for item in root.iter():
+         if item.tag.split("}")[-1] not in ("item", "entry"):
+diff -ruN a/tests/test_rss_strict.py b/tests/test_rss_strict.py
+--- a/tests/test_rss_strict.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_rss_strict.py	2026-10-13 05:20:13.152615253 +0000
+@@ -0,0 +1,42 @@
++import pytest
++
++from parsers import NotAFeed, parse_rss
++
++ITEM = "<item><title>t</title><description>d</description></item>"
++
++
++def test_html_page_served_as_a_feed_is_a_failure_not_an_empty_success():
++    """What mandiant, msrc_blog and packetstorm actually returned: HTML with HTTP 200."""
++    page = b"<!doctype html><html lang='en'><head><base href='https://x.test/'></head><body>hi</body></html>"
++    with pytest.raises(NotAFeed):
++        parse_rss(page)
++
++
++def test_well_formed_html_without_a_feed_root_is_rejected_too():
++    with pytest.raises(NotAFeed) as err:
++        parse_rss(b"<!DOCTYPE html><html><head><title>Just a moment...</title></head><body/></html>")
++    assert "html" in str(err.value)
++
++
++def test_error_message_is_short_and_carries_a_readable_excerpt():
++    with pytest.raises(NotAFeed) as err:
++        parse_rss(b"<!doctype html>" + b"x" * 5000)
++    assert len(str(err.value)) < 250
++
++
++def test_empty_but_valid_rss_feed_is_not_an_error():
++    assert parse_rss(b"<rss version='2.0'><channel><title>quiet week</title></channel></rss>") == []
++
++
++def test_empty_but_valid_atom_feed_is_not_an_error():
++    assert parse_rss(b"<feed xmlns='http://www.w3.org/2005/Atom'><title>new blog</title></feed>") == []
++
++
++def test_rss_1_0_rdf_root_is_accepted():
++    rdf = (b"<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#' xmlns='http://purl.org/rss/1.0/'>"
++           b"<item><title>CVE-2025-77777 disclosed</title><description>d</description></item></rdf:RDF>")
++    assert [r["cve_id"] for r in parse_rss(rdf)] == ["CVE-2025-77777"]
++
++
++def test_feed_with_items_but_no_cves_still_returns_empty_list():
++    assert parse_rss(f"<rss><channel>{ITEM}</channel></rss>".encode()) == []

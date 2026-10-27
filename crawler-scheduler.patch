@@ -1,0 +1,336 @@
+diff -ruN a/services/crawler/main.py b/services/crawler/main.py
+--- a/services/crawler/main.py	2026-10-11 14:41:25.683469724 +0000
++++ b/services/crawler/main.py	2026-10-11 14:41:30.501992198 +0000
+@@ -28,6 +28,7 @@
+ from raven_common.metrics import ERRORS, QUARANTINED, STAGE_LATENCY
+ 
+ from parsers import PARSERS
++from scheduler import BoundedRunner, due_sources
+ 
+ SERVICE = "crawler"
+ FAILURE_THRESHOLD = 5
+@@ -242,23 +243,32 @@
+ 
+     next_run: dict[str, datetime] = {}
+     async with httpx.AsyncClient(follow_redirects=True) as client:
++        async def work(src: dict) -> int:
++            return await harvest(client, src, producer)
++
++        async def on_success(src: dict, count: int) -> None:
++            await mark_success(src["source_id"], count)
++            log.info("harvested", source=src["source_id"], records=count)
++
++        async def on_failure(src: dict, exc: Exception) -> None:
++            # str(TimeoutError()) is empty - fall back to the type name so the
++            # registry's last_error is never blank for a real failure.
++            reason = str(exc) or type(exc).__name__
++            ERRORS.labels(SERVICE, "harvest").inc()
++            await mark_failure(src["source_id"], reason)
++            log.warning("harvest_failed", source=src["source_id"], error=reason[:300])
++
++        # One task per source, so a slow or dead feed cannot hold up the rest.
++        runner = BoundedRunner(
++            work, on_success, on_failure,
++            concurrency=int(os.environ.get("RAVEN_CRAWL_CONCURRENCY", "8")),
++            timeout=float(os.environ.get("RAVEN_HARVEST_TIMEOUT", "300")),
++        )
+         while True:
+             now = datetime.now(timezone.utc)
+-            for src in await load_sources():
+-                sid = src["source_id"]
+-                if src["parser"] in ("cmdb", "telegram"):
+-                    continue
+-                if next_run.get(sid, now) > now:
+-                    continue
+-                try:
+-                    count = await harvest(client, src, producer)
+-                    await mark_success(sid, count)
+-                    log.info("harvested", source=sid, records=count)
+-                except Exception as exc:
+-                    ERRORS.labels(SERVICE, "harvest").inc()
+-                    await mark_failure(sid, str(exc))
+-                    log.warning("harvest_failed", source=sid, error=str(exc)[:300])
+-                next_run[sid] = now + timedelta(seconds=int(src["poll_seconds"]))
++            for src in due_sources(await load_sources(), next_run, runner.in_flight(), now):
++                next_run[src["source_id"]] = now + timedelta(seconds=int(src["poll_seconds"]))
++                runner.dispatch(src)
+             await asyncio.sleep(30)
+ 
+ 
+diff -ruN a/services/crawler/scheduler.py b/services/crawler/scheduler.py
+--- a/services/crawler/scheduler.py	1970-01-01 00:00:00.000000000 +0000
++++ b/services/crawler/scheduler.py	2026-10-11 14:41:30.501832368 +0000
+@@ -0,0 +1,96 @@
++"""Per-source scheduling for the crawler.
++
++Kept free of import-time side effects (no settings, no metrics server, no
++network) so it can be unit tested without the rest of the service.
++
++Why this exists: the crawler used to poll every source in one serial loop, so
++one slow or dead feed (4 attempts x 90 s timeout plus backoff, roughly 6
++minutes) delayed every source queued behind it - and with a breaker threshold
++of 5 failures, a single dead source could stall the others for ~30 minutes
++before its breaker opened. Each source now runs as its own task, bounded by a
++global concurrency cap and a hard per-harvest timeout, and a source whose
++previous harvest is still running is never started a second time.
++"""
++from __future__ import annotations
++
++import asyncio
++import logging
++from typing import Any, Awaitable, Callable
++
++log = logging.getLogger("crawler.scheduler")
++
++# Sources that are loaded or pushed some other way and must never be polled
++# over HTTP by the generic loop.
++SKIP_PARSERS = frozenset({"cmdb", "telegram"})
++
++
++def due_sources(sources: list[dict], next_run: dict, in_flight: set, now) -> list[dict]:
++    """Sources that should start a harvest right now."""
++    due = []
++    for src in sources:
++        sid = src["source_id"]
++        if src["parser"] in SKIP_PARSERS:
++            continue
++        if sid in in_flight:
++            continue
++        if next_run.get(sid, now) > now:
++            continue
++        due.append(src)
++    return due
++
++
++class BoundedRunner:
++    """Runs one harvest task per source, isolated from each other.
++
++    work(src)            -> the harvest itself; raise on failure
++    on_success(src, res) -> bookkeeping after a clean harvest
++    on_failure(src, exc) -> bookkeeping after a failure *or a timeout*
++    """
++
++    def __init__(
++        self,
++        work: Callable[[dict], Awaitable[Any]],
++        on_success: Callable[[dict, Any], Awaitable[None]],
++        on_failure: Callable[[dict, Exception], Awaitable[None]],
++        concurrency: int = 8,
++        timeout: float = 300.0,
++    ) -> None:
++        self._work, self._ok, self._bad = work, on_success, on_failure
++        self._sem = asyncio.Semaphore(max(1, concurrency))
++        self._timeout = timeout
++        self._tasks: dict[str, asyncio.Task] = {}
++
++    def in_flight(self) -> set[str]:
++        self._tasks = {sid: t for sid, t in self._tasks.items() if not t.done()}
++        return set(self._tasks)
++
++    def dispatch(self, src: dict) -> None:
++        sid = src["source_id"]
++        if sid in self.in_flight():
++            return
++        self._tasks[sid] = asyncio.create_task(self._guarded(src))
++
++    async def _guarded(self, src: dict) -> None:
++        # The timeout starts only once a concurrency slot is held, so time
++        # spent queued behind other sources never counts against this one.
++        async with self._sem:
++            try:
++                result = await asyncio.wait_for(self._work(src), self._timeout)
++            except Exception as exc:  # includes TimeoutError
++                await self._safe(self._bad, src, exc)
++            else:
++                await self._safe(self._ok, src, result)
++
++    @staticmethod
++    async def _safe(cb, *args) -> None:
++        # A bookkeeping failure (e.g. the database blinking) must not kill the
++        # task silently or take any other source down with it.
++        try:
++            await cb(*args)
++        except Exception:
++            log.exception("scheduler_callback_failed")
++
++    async def drain(self) -> None:
++        """Wait for everything in flight (used by tests and clean shutdown)."""
++        if self._tasks:
++            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+diff -ruN a/tests/test_scheduler.py b/tests/test_scheduler.py
+--- a/tests/test_scheduler.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tests/test_scheduler.py	2026-10-11 14:41:30.508299122 +0000
+@@ -0,0 +1,173 @@
++import asyncio
++import time
++from datetime import datetime, timedelta, timezone
++
++from scheduler import BoundedRunner, due_sources
++
++NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
++
++
++def src(sid, parser="rss"):
++    return {"source_id": sid, "parser": parser}
++
++
++def make_runner(work, concurrency=8, timeout=5.0):
++    events = {"ok": [], "bad": []}
++
++    async def ok(s, res):
++        events["ok"].append((s["source_id"], res))
++
++    async def bad(s, exc):
++        events["bad"].append((s["source_id"], exc))
++
++    return BoundedRunner(work, ok, bad, concurrency=concurrency, timeout=timeout), events
++
++
++def test_slow_source_does_not_delay_fast_ones():
++    """The acceptance criterion: one slow source must not hold up the others."""
++    finished = []
++
++    async def work(s):
++        if s["source_id"] == "slow":
++            await asyncio.sleep(0.4)
++        finished.append(s["source_id"])
++        return 1
++
++    async def go():
++        runner, _ = make_runner(work)
++        t0 = time.monotonic()
++        for sid in ("slow", "a", "b", "c"):
++            runner.dispatch(src(sid))
++        # wait only until the three fast ones are done
++        while len([x for x in finished if x != "slow"]) < 3:
++            await asyncio.sleep(0.01)
++        fast_elapsed = time.monotonic() - t0
++        await runner.drain()
++        return fast_elapsed
++
++    fast_elapsed = asyncio.run(go())
++    assert finished[-1] == "slow"          # slow one finished last
++    assert fast_elapsed < 0.3              # and never held the others back
++
++
++def test_hanging_source_is_cut_off_and_recorded_as_failure():
++    async def work(s):
++        await asyncio.sleep(10)
++
++    async def go():
++        runner, events = make_runner(work, timeout=0.05)
++        runner.dispatch(src("hung"))
++        await runner.drain()
++        return events
++
++    events = asyncio.run(go())
++    assert [sid for sid, _ in events["bad"]] == ["hung"]
++    assert isinstance(events["bad"][0][1], TimeoutError)
++    assert events["ok"] == []
++
++
++def test_one_failure_does_not_affect_other_sources():
++    async def work(s):
++        if s["source_id"] == "dead":
++            raise RuntimeError("404")
++        return 7
++
++    async def go():
++        runner, events = make_runner(work)
++        for sid in ("dead", "alive1", "alive2"):
++            runner.dispatch(src(sid))
++        await runner.drain()
++        return events
++
++    events = asyncio.run(go())
++    assert sorted(sid for sid, _ in events["ok"]) == ["alive1", "alive2"]
++    assert [sid for sid, _ in events["bad"]] == ["dead"]
++
++
++def test_concurrency_is_bounded():
++    running = {"now": 0, "peak": 0}
++
++    async def work(s):
++        running["now"] += 1
++        running["peak"] = max(running["peak"], running["now"])
++        await asyncio.sleep(0.05)
++        running["now"] -= 1
++
++    async def go():
++        runner, _ = make_runner(work, concurrency=2)
++        for i in range(6):
++            runner.dispatch(src(f"s{i}"))
++        await runner.drain()
++
++    asyncio.run(go())
++    assert running["peak"] == 2
++
++
++def test_time_spent_queued_does_not_count_against_timeout():
++    async def work(s):
++        await asyncio.sleep(0.08)
++
++    async def go():
++        # concurrency 1: the 3rd source queues ~0.16 s, longer than the 0.12 s
++        # timeout, but must still succeed because its clock starts at its slot.
++        runner, events = make_runner(work, concurrency=1, timeout=0.12)
++        for sid in ("a", "b", "c"):
++            runner.dispatch(src(sid))
++        await runner.drain()
++        return events
++
++    events = asyncio.run(go())
++    assert len(events["ok"]) == 3 and events["bad"] == []
++
++
++def test_source_already_running_is_not_started_twice():
++    calls = []
++
++    async def work(s):
++        calls.append(s["source_id"])
++        await asyncio.sleep(0.1)
++
++    async def go():
++        runner, _ = make_runner(work)
++        runner.dispatch(src("x"))
++        await asyncio.sleep(0.01)
++        runner.dispatch(src("x"))   # previous harvest still in flight
++        await runner.drain()
++
++    asyncio.run(go())
++    assert calls == ["x"]
++
++
++def test_bookkeeping_failure_does_not_kill_the_runner():
++    async def work(s):
++        return 1
++
++    async def broken_ok(s, res):
++        raise RuntimeError("database blinked")
++
++    async def go():
++        events = []
++
++        async def bad(s, exc):
++            events.append(s["source_id"])
++
++        runner = BoundedRunner(work, broken_ok, bad, concurrency=4, timeout=1)
++        runner.dispatch(src("a"))
++        runner.dispatch(src("b"))
++        await runner.drain()
++        runner.dispatch(src("c"))        # still usable afterwards
++        await runner.drain()
++        return runner.in_flight()
++
++    assert asyncio.run(go()) == set()
++
++
++def test_due_sources_respects_schedule_skips_and_in_flight():
++    sources = [src("due"), src("later"), src("busy"), src("cmdb", "cmdb"), src("tg", "telegram")]
++    next_run = {"later": NOW + timedelta(seconds=60), "due": NOW - timedelta(seconds=1)}
++    out = due_sources(sources, next_run, {"busy"}, NOW)
++    assert [s["source_id"] for s in out] == ["due"]
++
++
++def test_never_seen_source_is_due_immediately():
++    assert [s["source_id"] for s in due_sources([src("new")], {}, set(), NOW)] == ["new"]

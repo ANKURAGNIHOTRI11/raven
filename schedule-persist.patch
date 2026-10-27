@@ -1,0 +1,99 @@
+diff -ruN a/services/crawler/scheduler.py b/services/crawler/scheduler.py
+--- a/services/crawler/scheduler.py	2026-10-12 05:12:13.122596672 +0000
++++ b/services/crawler/scheduler.py	2026-10-12 05:12:17.411586765 +0000
+@@ -15,6 +15,7 @@
+ 
+ import asyncio
+ import logging
++from datetime import timedelta
+ from typing import Any, Awaitable, Callable
+ 
+ log = logging.getLogger("crawler.scheduler")
+@@ -24,6 +25,24 @@
+ SKIP_PARSERS = frozenset({"cmdb", "telegram"})
+ 
+ 
++def initial_due_time(src: dict, now):
++    """When a source this process has not scheduled yet should next run.
++
++    The in-memory schedule is lost on every restart, which used to make every
++    source immediately due - re-downloading the whole EPSS file and the NVD
++    window each time the container was recreated. The registry already records
++    last_success, so the schedule is rebuilt from it: poll_seconds after the
++    last success. A source that has never succeeded is due immediately, and a
++    last_success in the future (clock skew) is clamped so it cannot park a
++    source for longer than one interval.
++    """
++    last = src.get("last_success")
++    if last is None:
++        return now
++    interval = timedelta(seconds=int(src.get("poll_seconds") or 3600))
++    return min(last + interval, now + interval)
++
++
+ def due_sources(sources: list[dict], next_run: dict, in_flight: set, now) -> list[dict]:
+     """Sources that should start a harvest right now."""
+     due = []
+@@ -33,7 +52,8 @@
+             continue
+         if sid in in_flight:
+             continue
+-        if next_run.get(sid, now) > now:
++        due_at = next_run[sid] if sid in next_run else initial_due_time(src, now)
++        if due_at > now:
+             continue
+         due.append(src)
+     return due
+diff -ruN a/tests/test_scheduler.py b/tests/test_scheduler.py
+--- a/tests/test_scheduler.py	2026-10-12 05:12:17.198596914 +0000
++++ b/tests/test_scheduler.py	2026-10-12 05:12:17.418341640 +0000
+@@ -2,7 +2,7 @@
+ import time
+ from datetime import datetime, timedelta, timezone
+ 
+-from scheduler import BoundedRunner, due_sources
++from scheduler import BoundedRunner, due_sources, initial_due_time
+ 
+ NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+ 
+@@ -171,3 +171,40 @@
+ 
+ def test_never_seen_source_is_due_immediately():
+     assert [s["source_id"] for s in due_sources([src("new")], {}, set(), NOW)] == ["new"]
++
++
++def with_history(sid, last_success, poll_seconds=3600):
++    return {"source_id": sid, "parser": "rss", "last_success": last_success, "poll_seconds": poll_seconds}
++
++
++def test_restart_does_not_repoll_a_source_that_succeeded_recently():
++    """The restart thundering herd: a fresh process must honour last_success."""
++    recent = with_history("nvd", NOW - timedelta(minutes=10), poll_seconds=3600)
++    assert due_sources([recent], {}, set(), NOW) == []
++
++
++def test_restart_polls_a_source_whose_interval_has_elapsed():
++    stale = with_history("nvd", NOW - timedelta(minutes=90), poll_seconds=3600)
++    assert [s["source_id"] for s in due_sources([stale], {}, set(), NOW)] == ["nvd"]
++
++
++def test_each_source_uses_its_own_interval_after_restart():
++    a_day = with_history("epss", NOW - timedelta(hours=5), poll_seconds=86400)    # not due
++    two_h = with_history("ghsa", NOW - timedelta(hours=5), poll_seconds=7200)     # due
++    out = due_sources([a_day, two_h], {}, set(), NOW)
++    assert [s["source_id"] for s in out] == ["ghsa"]
++
++
++def test_never_succeeded_source_is_due_even_with_a_poll_interval():
++    s = with_history("talos", None, poll_seconds=14400)
++    assert [x["source_id"] for x in due_sources([s], {}, set(), NOW)] == ["talos"]
++
++
++def test_future_last_success_cannot_park_a_source_beyond_one_interval():
++    skewed = with_history("x", NOW + timedelta(days=30), poll_seconds=3600)
++    assert initial_due_time(skewed, NOW) == NOW + timedelta(seconds=3600)
++
++
++def test_in_memory_schedule_still_wins_over_history():
++    s = with_history("a", NOW - timedelta(hours=5), poll_seconds=3600)   # history says due
++    assert due_sources([s], {"a": NOW + timedelta(seconds=60)}, set(), NOW) == []
