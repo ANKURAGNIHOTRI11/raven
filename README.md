@@ -75,19 +75,21 @@ also need GPU memory when all are active. If startup reports an out-of-memory er
 lower the context length or move companion workloads to another GPU before increasing
 the vLLM memory fraction.
 
-A 72B FP8 model is **not** the default for a single 80 GB A100/H100. This compose file
+A 72B model is **not** the default for a single 80 GB A100/H100. This compose file
 currently assigns vLLM to one selected GPU and co-locates other GPU workloads there.
 Only try a 72B model after planning GPU placement and validating memory use on the
 target hardware. For any model-size change, update both model settings so the analyst
 and verifier names match the model served by vLLM:
 
-    RAVEN_VLLM_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
-    RAVEN_VERIFIER_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
-    RAVEN_VLLM_GPU_FRAC=0.80
+    RAVEN_VLLM_MODEL=Qwen/Qwen2.5-72B-Instruct-AWQ
+    RAVEN_VERIFIER_MODEL=Qwen/Qwen2.5-72B-Instruct-AWQ
+    RAVEN_VLLM_GPU_FRAC=0.70
     RAVEN_VLLM_MAX_LEN=8192
 
 That example is a hardware-dependent tuning example, not a validated production
-profile. Do not use it on a single 80 GB card without independent sizing and testing.
+profile. On a single 80 GB card, do not co-locate the embedder, normalizer, and GNN on
+that same GPU without independent sizing and testing. If you have multiple GPUs, use
+the per-service GPU-device settings above to move companion workloads.
 The current project CI validates source tests and Compose syntax; it does not load a
 large model or certify GPU memory fit.
 

@@ -73,7 +73,8 @@ async def healthz() -> dict:
             await c.fetchval("SELECT 1")
         return {"status": "ok"}
     except Exception as exc:
-        raise HTTPException(503, str(exc)[:200]) from exc
+        log.error("database_healthcheck_failed", error=str(exc)[:200])
+        raise HTTPException(503, "database unavailable") from exc
 
 
 @app.get("/api/overview")

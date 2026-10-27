@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 COMPOSE := docker compose
 
-.PHONY: help env validate-env base build up down logs ps gpu-check vllm-gh200 train seed smoke reset backup
+.PHONY: help env validate-env base build up down logs ps gpu-check vllm-gh200 train seed smoke reset migrate backup
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-12s %s\n", $$1, $$2}'
@@ -23,11 +23,12 @@ vllm-gh200: ## optional: build a custom vLLM image on aarch64/Grace Hopper
 build: validate-env base ## validate config and build every service image
 	$(COMPOSE) build
 
-up: build ## build and start the platform
+up: build ## build, migrate the database, and start the platform
+	$(COMPOSE) up -d postgres
+	$(MAKE) migrate
 	$(COMPOSE) up -d
-	@set -a; . ./.env; set +a; printf "console:    http://127.0.0.1:%s/\n" "$${RAVEN_HTTP_PORT:-8088}"; printf "Grafana:    http://127.0.0.1:%s/grafana/ (via SSH tunnel recommended)\n" "$${RAVEN_HTTP_PORT:-8088}"
+	@set -a; . ./.env; set +a; printf "console:    http://127.0.0.1:%s/\\n" "$$\{RAVEN_HTTP_PORT:-8088}"; printf "Grafana:    http://127.0.0.1:%s/grafana/ (via SSH tunnel recommended)\\n" "$$\{RAVEN_HTTP_PORT:-8088}"
 	@echo "Neo4j HTTP/Bolt and MinIO Console are bound to loopback by default."
-
 down: ## stop everything, keep the data
 	$(COMPOSE) down
 
@@ -54,9 +55,32 @@ seed: validate-env ## re-apply seed/assets.json through the crawler's startup se
 smoke: validate-env ## run end-to-end health and authentication checks
 	@set -a; . ./.env; set +a; RAVEN_BASE="http://127.0.0.1:$${RAVEN_HTTP_PORT:-8088}" ./deploy/smoke_test.sh
 
-backup: validate-env ## dump Postgres and the Neo4j graph
-	@set -a; . ./.env; set +a; \
-	mkdir -p backups; \
-	$(COMPOSE) exec -T postgres pg_dump -U "$$POSTGRES_USER" "$$POSTGRES_DB" | gzip > "backups/postgres-$$(date +%F).sql.gz"; \
-	$(COMPOSE) exec -T neo4j neo4j-admin database dump neo4j --to-stdout > "backups/neo4j-$$(date +%F).dump"; \
-	echo "Wrote backups/ (store them securely off-host)."
+migrate: validate-env ## apply idempotent Postgres migrations before services start
+	@set -Eeuo pipefail; \
+	set -a; . ./.env; set +a; \
+	ready=0; \
+	for attempt in $$(seq 1 60); do \
+	  if $(COMPOSE) exec -T postgres pg_isready -h 127.0.0.1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" >/dev/null 2>&1; then ready=1; break; fi; \
+	  sleep 2; \
+	done; \
+	if [[ "$$ready" != 1 ]]; then echo "Postgres did not become ready for migrations." >&2; exit 1; fi; \
+	for migration in infra/postgres/migrations/*.sql; do \
+	  echo "Applying $$migration"; \
+	  $(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" < "$$migration"; \
+	done
+
+backup: validate-env ## create timestamped PostgreSQL and MinIO cold backups
+	@set -Eeuo pipefail; umask 077; \
+	set -a; . ./.env; set +a; \
+	stamp=$$(date +%F-%H%M%S); \
+	backup_dir="$(CURDIR)/backups/$$stamp"; mkdir -p "$$backup_dir"; \
+	$(COMPOSE) exec -T postgres pg_dump --clean --if-exists --no-owner --no-privileges -U "$$POSTGRES_USER" "$$POSTGRES_DB" | gzip -1 > "$$backup_dir/postgres.sql.gz"; \
+	minio_id=$$($(COMPOSE) ps -aq minio | head -n1); \
+	if [[ -z "$$minio_id" ]]; then echo "MinIO container not found; run make up first." >&2; exit 1; fi; \
+	minio_was_running=$$($(COMPOSE) ps --status running -q minio); \
+	if [[ -n "$$minio_was_running" ]]; then $(COMPOSE) stop minio >/dev/null; fi; \
+	restart_minio() { if [[ -n "$$minio_was_running" ]]; then $(COMPOSE) start minio >/dev/null; fi; }; \
+	trap restart_minio EXIT; \
+	docker run --rm --volumes-from "$$minio_id:ro" -v "$$backup_dir:/backup" alpine:3.22 sh -ec 'tar czf /backup/minio-data.tar.gz -C /data .'; \
+	restart_minio; trap - EXIT; \
+	echo "Backup written to $$backup_dir (Postgres dump + MinIO object volume). Store it securely off-host."
