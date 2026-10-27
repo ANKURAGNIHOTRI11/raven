@@ -34,6 +34,7 @@ from raven_common.settings import get_settings
 from prompts import ANALYSIS_TASK, REMEDIATION_TASK, VERIFIER_TASK
 from rag import RagEngine, render_structured
 from router import ModelRouter, Route
+from verification_policy import verification_passed
 
 settings = get_settings()
 log = configure("llm-gateway", settings.log_level)
@@ -198,12 +199,32 @@ async def analyze(req: AnalyzeRequest) -> dict:
     except Exception as exc:
         ERRORS.labels("llm-gateway", "verify").inc()
         log.warning("verifier_failed", error=str(exc)[:300])
+        # Fail closed, even if the analyst produced a plausible answer. The caller
+        # must abstain instead of treating an unavailable/malformed verifier as a pass.
+        verdict = {
+            "verdict": "unchecked", "grounded": False,
+            "notes": "Verifier unavailable; analysis was not validated.",
+            "adjusted_confidence": 0.0, "hallucinations": [],
+            "unsafe_steps": [], "missing_rollback": bool(remediation),
+        }
 
     if remediation and not remediation.get("rollback"):
         verdict["verdict"] = "fail"
         verdict["missing_rollback"] = True
 
+    verification_ok = verification_passed(verdict)
+    if not verification_ok:
+        # No remediation plan or trusted/grounded status survives an unverified result.
+        remediation = None
+        grounded = False
+        answer["grounded"] = False
+        if str(verdict.get("verdict", "")).strip().lower() == "pass":
+            verdict["verdict"] = "fail"
+        verdict["notes"] = str(verdict.get("notes", "") or "Verification did not pass.")[:1000]
+
     final_confidence = float(answer.get("confidence", 0.0))
+    if not verification_ok:
+        final_confidence = min(final_confidence, max(0.0, settings.abstain_confidence_floor - 0.01))
     if verdict.get("verdict") == "fail":
         final_confidence = min(final_confidence, 0.4)
     if not grounded:
