@@ -60,29 +60,36 @@ Useful targets: `make logs`, `make ps`, `make down`, `make reset` (destroys volu
 | api | Operator API + console | — |
 | prometheus / grafana / nginx | Telemetry and front door | — |
 
-### H200 memory budget
+### GPU placement and model sizing
 
-| Consumer | Reservation | Notes |
-|---|---|---|
-| vLLM (Qwen2.5-32B-AWQ + KV cache) | ~101 GB | `--gpu-memory-utilization=0.72` |
-| Embedder (bge-base) | ~2 GB | batch 64 |
-| Normalizer BERT pass | ~3 GB | zero-shot exploit maturity + product NER |
-| GNN engine | ~6 GB | GATv2 + SAGE, full-graph forward |
-| Headroom | ~29 GB | retrain bursts, fragmentation |
+The default compose configuration assigns the vLLM server, embedder, normalizer, and GNN
+to the same selected GPU (RAVEN_GPU_DEVICE, default 0). The vLLM default caps its
+own allocator target at 55% of the card's VRAM (RAVEN_VLLM_GPU_FRAC=0.55) and uses an
+8,192-token context (RAVEN_VLLM_MAX_LEN=8192). These are starting settings, not a
+benchmark or guarantee that every workload fits. Monitor nvidia-smi and the vLLM logs
+on the actual node; tune concurrency, context length, and placement based on measured use.
 
-To run the higher-quality model instead, set in `.env`:
+The default model is Qwen/Qwen2.5-32B-Instruct-AWQ. An 80 GB A100 or H100 is the
+intended starting class for this quantized model, but the normalizer, embedder, and GNN
+also need GPU memory when all are active. If startup reports an out-of-memory error,
+lower the context length or move companion workloads to another GPU before increasing
+the vLLM memory fraction.
 
-```
-RAVEN_VLLM_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
-RAVEN_VERIFIER_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
-RAVEN_VLLM_GPU_FRAC=0.80
-RAVEN_VLLM_MAX_LEN=16384
-```
+A 72B FP8 model is **not** the default for a single 80 GB A100/H100. This compose file
+currently assigns vLLM to one selected GPU and co-locates other GPU workloads there.
+Only try a 72B model after planning GPU placement and validating memory use on the
+target hardware. For any model-size change, update both model settings so the analyst
+and verifier names match the model served by vLLM:
 
-and lower the normalizer batch size. 72B-FP8 leaves roughly 12 GB of headroom on a
-single H200, so do not retrain the GNN while it is serving.
+    RAVEN_VLLM_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
+    RAVEN_VERIFIER_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
+    RAVEN_VLLM_GPU_FRAC=0.80
+    RAVEN_VLLM_MAX_LEN=8192
 
----
+That example is a hardware-dependent tuning example, not a validated production
+profile. Do not use it on a single 80 GB card without independent sizing and testing.
+The current project CI validates source tests and Compose syntax; it does not load a
+large model or certify GPU memory fit.
 
 ## The four novel layers
 
