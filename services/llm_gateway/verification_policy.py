@@ -10,6 +10,7 @@ def verification_passed(verdict: Any) -> bool:
         return False
     return (
         str(verdict.get("verdict", "")).strip().lower() == "pass"
+        and bool(verdict.get("grounded"))
         and not verdict.get("hallucinations")
         and not verdict.get("unsafe_steps")
         and not bool(verdict.get("missing_rollback"))

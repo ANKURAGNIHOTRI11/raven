@@ -23,6 +23,10 @@ def test_unchecked_verifier_is_not_accepted():
     assert not verification_passed(valid_verdict(verdict="unchecked"))
 
 
+def test_un_grounded_verifier_pass_is_not_accepted():
+    assert not verification_passed(valid_verdict(grounded=False))
+
+
 def test_verifier_failure_is_not_accepted():
     assert not verification_passed(valid_verdict(verdict="fail"))
 

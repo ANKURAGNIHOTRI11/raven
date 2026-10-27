@@ -87,7 +87,8 @@ services:
 
 ```bash
 make down
-MINIO_VOLUME=$(docker volume ls --filter label=com.docker.compose.volume=miniodata -q | head -n1)
+PROJECT_NAME=${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}
+MINIO_VOLUME=$(docker volume ls --filter label=com.docker.compose.project="$PROJECT_NAME" --filter label=com.docker.compose.volume=miniodata -q | head -n1)
 test -n "$MINIO_VOLUME"
 docker run --rm -v "$MINIO_VOLUME:/data" -v "$PWD/backups/<timestamp>:/backup:ro" alpine:3.22 sh -ec 'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar xzf /backup/minio-data.tar.gz -C /data'
 docker compose up -d postgres
