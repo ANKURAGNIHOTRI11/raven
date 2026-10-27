@@ -6,7 +6,7 @@ attack graph over your estate, ranks exploit chains with a GNN, fuses a contextu
 score with a confidence interval and evidence trail, and drives a guarded multi-agent
 decision loop that never touches production without human approval.
 
-Target host: bare-metal Ubuntu 22.04 LTS with an NVIDIA A100 80 GB, H100 80 GB, H200, or compatible GPU; Docker + NVIDIA Container Toolkit and a current NVIDIA driver are required. The default inference service uses the official multi-architecture vLLM release image. A locally built image is optional on Grace Hopper.
+Target host: bare-metal Ubuntu 22.04 LTS with an NVIDIA A100 80 GB, H100 80 GB, H200, or compatible GPU. The current deployment uses Docker Compose and the NVIDIA Container Toolkit. The default vLLM CUDA 12.9 image should use NVIDIA Linux driver 575.51.03 or newer; the bootstrap script checks this baseline. A native no-Docker deployment is not provided by this compose-based path.
 ---
 
 ## Quick start
@@ -62,8 +62,8 @@ Useful targets: `make logs`, `make ps`, `make down`, `make reset` (destroys volu
 
 ### GPU placement and model sizing
 
-The default compose configuration assigns the vLLM server, embedder, normalizer, and GNN
-to the same selected GPU (RAVEN_GPU_DEVICE, default 0). The vLLM default caps its
+The default compose configuration gives vLLM, the embedder, normalizer, and GNN independent GPU-device settings:
+RAVEN_VLLM_GPU_DEVICE, RAVEN_EMBEDDER_GPU_DEVICE, RAVEN_NORMALIZER_GPU_DEVICE, and RAVEN_GNN_GPU_DEVICE (each defaults to 0). Set these to different device indices to split workloads across multiple GPUs. When all are 0, the models share the same selected GPU. The vLLM default caps its
 own allocator target at 55% of the card's VRAM (RAVEN_VLLM_GPU_FRAC=0.55) and uses an
 8,192-token context (RAVEN_VLLM_MAX_LEN=8192). These are starting settings, not a
 benchmark or guarantee that every workload fits. Monitor nvidia-smi and the vLLM logs

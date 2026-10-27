@@ -32,6 +32,13 @@ jobs:
         run: python -m pytest -q
       - name: Compile Python sources
         run: python -m compileall -q libs services deploy tests
+      - name: Validate shell scripts and executable entry points
+        run: |
+          bash -n deploy/*.sh
+          test -x deploy/bootstrap_host.sh
+          test -x deploy/build_vllm_gh200.sh
+          test -x deploy/check_epics.sh
+          test -x deploy/smoke_test.sh
       - name: Generate and validate test environment
         run: |
           python deploy/init_env.py

@@ -12,6 +12,9 @@ echo "RAVEN smoke test"
 
 curl -sf "$BASE/healthz" >/dev/null && pass "api healthz" || fail "api healthz"
 
+UNAUTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/overview" || echo "000")
+[[ "$UNAUTH_STATUS" == "401" ]] && pass "unauthenticated API blocked" || fail "unauthenticated API should return 401"
+
 OVERVIEW=$(curl -sf -H "Authorization: Bearer $TOKEN" "$BASE/api/overview" || echo "")
 [[ -n "$OVERVIEW" ]] && pass "api authenticated" || fail "api authenticated (check RAVEN_API_TOKEN)"
 
@@ -24,7 +27,6 @@ VULNS=$(echo "$OVERVIEW" | python3 -c "import sys,json;print(json.load(sys.stdin
 docker compose exec -T gnn-engine python -c "import torch;assert torch.cuda.is_available()" 2>/dev/null \
   && pass "GPU visible to the GNN engine" || fail "GPU not visible to the GNN engine"
 
-curl -sf http://localhost:8088/../ >/dev/null 2>&1 || true
 docker compose exec -T llm-gateway python -c "
 import asyncio, json
 from raven_common import guard

@@ -29,13 +29,40 @@ x-db-env: &db_env
   <<: *app_env
   RAVEN_PG_DSN: ${RAVEN_PG_DSN:?Run make env to generate the local .env}
 
-x-gpu: &gpu
+x-gpu-vllm: &gpu_vllm
   deploy:
     resources:
       reservations:
         devices:
           - driver: nvidia
-            device_ids: ["${RAVEN_GPU_DEVICE:-0}"]
+            device_ids: ["${RAVEN_VLLM_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-embedder: &gpu_embedder
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_EMBEDDER_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-normalizer: &gpu_normalizer
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_NORMALIZER_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-gnn: &gpu_gnn
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_GNN_GPU_DEVICE:-0}"]
             capabilities: [gpu]
 
 networks:
@@ -91,7 +118,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raven}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raven} -d ${POSTGRES_DB:-raven}"]
       interval: 10s
       retries: 12
 
@@ -158,7 +185,7 @@ services:
 
   # ------------------------------------------------------------ model plane
   vllm:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_vllm]
     # Official vLLM publishes a multi-architecture release image. Set
     # RAVEN_VLLM_IMAGE only if intentionally using a custom local build.
     image: ${RAVEN_VLLM_IMAGE:-vllm/vllm-openai:v0.32.0-cu129}
@@ -182,7 +209,7 @@ services:
       start_period: 900s
 
   embedder:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_embedder]
     build: {context: ., dockerfile: services/embedder/Dockerfile}
     image: raven/embedder:1.0
     environment:
@@ -236,7 +263,7 @@ services:
       minio: {condition: service_started}
 
   normalizer:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_normalizer]
     build: {context: ., dockerfile: services/normalizer/Dockerfile}
     image: raven/normalizer:1.0
     environment:
@@ -265,7 +292,7 @@ services:
       redpanda: {condition: service_healthy}
 
   gnn-engine:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_gnn]
     build: {context: ., dockerfile: services/gnn_engine/Dockerfile}
     image: raven/gnn-engine:1.0
     environment:
