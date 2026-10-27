@@ -27,7 +27,7 @@ up: build ## build, migrate the database, and start the platform
 	$(COMPOSE) up -d postgres
 	$(MAKE) migrate
 	$(COMPOSE) up -d
-	@set -a; . ./.env; set +a; port="${RAVEN_HTTP_PORT:-8088}"; printf "console:    http://127.0.0.1:%s/\n" "$port"; printf "Grafana:    http://127.0.0.1:%s/grafana/ (via SSH tunnel recommended)\n" "$port"
+	@set -a; . ./.env; set +a; port=$(printenv RAVEN_HTTP_PORT || echo 8088); printf "console:    http://127.0.0.1:%s/\n" "$port"; printf "Grafana:    http://127.0.0.1:%s/grafana/ (via SSH tunnel recommended)\n" "$port"
 	@echo "Neo4j HTTP/Bolt and MinIO Console are bound to loopback by default."
 down: ## stop everything, keep the data
 	$(COMPOSE) down
