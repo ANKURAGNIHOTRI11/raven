@@ -78,9 +78,9 @@ backup: validate-env ## create timestamped PostgreSQL and MinIO cold backups
 	minio_id=$$($(COMPOSE) ps -aq minio | head -n1); \
 	if [[ -z "$$minio_id" ]]; then echo "MinIO container not found; run make up first." >&2; exit 1; fi; \
 	minio_was_running=$$($(COMPOSE) ps --status running -q minio); \
-	if [[ -n "$$minio_was_running" ]]; then $(COMPOSE) stop minio >/dev/null; fi; \
 	restart_minio() { if [[ -n "$$minio_was_running" ]]; then $(COMPOSE) start minio >/dev/null; fi; }; \
 	trap restart_minio EXIT; \
+	if [[ -n "$$minio_was_running" ]]; then $(COMPOSE) stop minio >/dev/null; fi; \
 	docker run --rm --volumes-from "$$minio_id:ro" -v "$$backup_dir:/backup" alpine:3.22 sh -ec 'tar czf /backup/minio-data.tar.gz -C /data .'; \
 	restart_minio; trap - EXIT; \
 	echo "Backup written to $$backup_dir (Postgres dump + MinIO object volume). Store it securely off-host."
