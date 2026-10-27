@@ -6,31 +6,25 @@ attack graph over your estate, ranks exploit chains with a GNN, fuses a contextu
 score with a confidence interval and evidence trail, and drives a guarded multi-agent
 decision loop that never touches production without human approval.
 
-Target host: bare-metal Ubuntu 22.04 LTS, single NVIDIA H200 (141 GB), CUDA driver ≥ 550,
-Docker + NVIDIA Container Toolkit. Everything runs in containers; nothing is installed
-into the host Python. On an aarch64/Grace-Hopper host, `vllm/vllm-openai` has no
-published arm64 image — run `make vllm-gh200` once to build it natively from
-source before `make up` (see `deploy/build_vllm_gh200.sh`).
-
+Target host: bare-metal Ubuntu 22.04 LTS with an NVIDIA A100 80 GB, H100 80 GB, H200, or compatible GPU; Docker + NVIDIA Container Toolkit and a current NVIDIA driver are required. The default inference service uses the official multi-architecture vLLM release image. A locally built image is optional on Grace Hopper.
 ---
 
 ## Quick start
 
 ```bash
-sudo ./deploy/bootstrap_host.sh     # docker, nvidia-container-toolkit, vm.max_map_count
-make env                            # copies .env.example -> .env
-$EDITOR .env                        # set passwords + RAVEN_API_TOKEN, NVD_API_KEY
-make base                           # builds raven-base-cpu:1.0 and raven-base-gpu:1.0
-[ "$(uname -m)" = "aarch64" ] && make vllm-gh200  # Grace/GH200 hosts only, ~20-30 min
-make build                          # builds the 12 service images
-make up                             # starts the 22-container stack
-make gpu-check                      # confirms the GPU is visible inside containers
-make seed                           # loads seed/assets.json into the CMDB tables
-make smoke                          # end-to-end health + pipeline check
+sudo ./deploy/bootstrap_host.sh     # Docker, NVIDIA Container Toolkit, vm.max_map_count
+make env                            # generates unique local secrets in .env (mode 600)
+$EDITOR .env                        # configure optional feed/model settings; keep generated secrets
+make validate-env                   # checks secret quality and Postgres DSN consistency
+make up                             # builds images and starts the stack
+make gpu-check                      # confirms GPU visibility inside containers
+make seed                           # re-applies seed/assets.json via crawler startup
+make smoke                          # end-to-end health/authentication checks
 ```
 
-Console: `http://<host>:8088/` — bearer token is `RAVEN_API_TOKEN` from `.env`.
-Grafana: `http://<host>:3000/`. Prometheus: `http://<host>:9090/`.
+Console: `http://127.0.0.1:8088/` — bearer token is `RAVEN_API_TOKEN` from `.env`.
+Grafana: `http://127.0.0.1:8088/grafana/`. Management ports bind to loopback by default; use an SSH tunnel for remote access.
+Prometheus is reachable only on the Docker network by default. Do not publish the plain-HTTP console or management ports directly to the public internet.
 
 First model pull takes a while: vLLM downloads `Qwen/Qwen2.5-32B-Instruct-AWQ`
 (~19 GB) on first boot. `docker compose logs -f vllm` to watch it.
@@ -79,9 +73,10 @@ Useful targets: `make logs`, `make ps`, `make down`, `make reset` (destroys volu
 To run the higher-quality model instead, set in `.env`:
 
 ```
-RAVEN_LLM_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
-RAVEN_VLLM_GPU_FRACTION=0.80
-RAVEN_VLLM_MAX_MODEL_LEN=16384
+RAVEN_VLLM_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
+RAVEN_VERIFIER_MODEL=neuralmagic/Qwen2.5-72B-Instruct-FP8
+RAVEN_VLLM_GPU_FRAC=0.80
+RAVEN_VLLM_MAX_LEN=16384
 ```
 
 and lower the normalizer batch size. 72B-FP8 leaves roughly 12 GB of headroom on a
@@ -128,14 +123,19 @@ infra/                 postgres schema, nginx, prometheus, grafana provisioning
 docker/                two shared base images + per-service Dockerfiles
 deploy/                host bootstrap, smoke test
 seed/                  12-node HPC asset estate for first boot
-tests/                 24 unit tests (guard, scoring, policy, parsers, chains)
+tests/                 unit and regression tests (guard, scoring, policy, parsers, chains)
 docs/                  architecture, threat model, runbook
 ```
 
-Run the tests inside the CPU base image:
+Run unit tests in an isolated Python environment (CPU PyTorch is sufficient for these tests):
 
 ```bash
-docker run --rm -v "$PWD:/app" -w /app raven-base-cpu:1.0 pytest -q
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -e ./libs/raven_common pytest torch-geometric==2.6.1
+TRANSFORMERS_OFFLINE=1 python -m pytest -q
 ```
 
 ## Documentation
