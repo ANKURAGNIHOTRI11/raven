@@ -62,7 +62,7 @@ def test_hanging_source_is_cut_off_and_recorded_as_failure():
 
     events = asyncio.run(go())
     assert [sid for sid, _ in events["bad"]] == ["hung"]
-    assert isinstance(events["bad"][0][1], TimeoutError)
+    assert isinstance(events['bad'][0][1], asyncio.TimeoutError)
     assert events["ok"] == []
 
 
