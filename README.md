@@ -75,10 +75,10 @@ also need GPU memory when all are active. If startup reports an out-of-memory er
 lower the context length or move companion workloads to another GPU before increasing
 the vLLM memory fraction.
 
-A 72B model is **not** the default for a single 80 GB A100/H100. This compose file
-currently assigns vLLM to one selected GPU and co-locates other GPU workloads there.
-Only try a 72B model after planning GPU placement and validating memory use on the
-target hardware. For any model-size change, update both model settings so the analyst
+A 72B model is **not** the default for a single 80 GB A100/H100. By default this
+compose file assigns all GPU workloads to device 0, but you can split them across
+multiple GPUs with the per-service settings above. Only try a 72B model after planning
+GPU placement and validating memory use on the target hardware. For any model-size change, update both model settings so the analyst
 and verifier names match the model served by vLLM:
 
     RAVEN_VLLM_MODEL=Qwen/Qwen2.5-72B-Instruct-AWQ

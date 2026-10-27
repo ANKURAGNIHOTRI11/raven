@@ -32,9 +32,10 @@ jobs:
         run: python -m pytest -q
       - name: Compile Python sources
         run: python -m compileall -q libs services deploy tests
-      - name: Validate shell scripts and executable entry points
+      - name: Validate shell scripts, Makefile recipes, and executable entry points
         run: |
           bash -n deploy/*.sh
+          make -n migrate backup >/dev/null
           test -x deploy/bootstrap_host.sh
           test -x deploy/build_vllm_gh200.sh
           test -x deploy/check_epics.sh
