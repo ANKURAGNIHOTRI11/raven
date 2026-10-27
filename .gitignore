@@ -36,7 +36,6 @@
 **/raven_redhat_*_before.json
 **/raven_redhat_*_publish.jsonl
 
-
 # Editor swaps and local rollback copies are not source files.
 **/*.bak
 **/*.bak.*
@@ -44,3 +43,11 @@
 **/*.swp
 **/*.swo
 **/*.pre-modified-order-*
+
+# Editor swaps and local rollback copies are not source files.
+**/*.bak*
+**/*.orig
+**/*.swp
+**/*.swo
+**/*.pre-modified-order-*
+/backups/
