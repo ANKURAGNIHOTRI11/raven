@@ -2,13 +2,14 @@
 # requirements are Docker, the NVIDIA Container Toolkit and a working driver.
 #
 #   make up        build base images, start the platform
-#   make gpu-check confirm the H200 is visible inside a container
+#   make gpu-check confirm the selected NVIDIA GPU is visible in containers
 #   make logs      follow everything
 #
-# GPU sharing: vLLM, the embedder, the normalizer's BERT pass and the GNN all
-# target device 0. vLLM is capped at 72% of VRAM so the other three fit
-# alongside it on a single 141 GB H200. Raise RAVEN_VLLM_GPU_FRAC only if you
-# move the smaller models off the card.
+# GPU placement: vLLM, embedder, normalizer BERT, and GNN share
+# RAVEN_GPU_DEVICE by default. The conservative vLLM default (55%) is intended
+# as a starting point for an 80 GB card; measure VRAM use on the target host.
+# On a shared GPU, do not raise the vLLM fraction without moving other models
+# elsewhere or disabling their GPU workloads.
 
 x-common: &common
   restart: unless-stopped
