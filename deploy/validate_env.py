@@ -6,6 +6,7 @@ import ipaddress
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 SECRET_KEYS = (
     "POSTGRES_PASSWORD",
@@ -15,6 +16,7 @@ SECRET_KEYS = (
     "RAVEN_API_TOKEN",
 )
 HEX_SECRET = re.compile(r"^[0-9a-fA-F]{64}$")
+SIMPLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def parse_env(path: Path) -> dict[str, str]:
@@ -45,8 +47,23 @@ def validate_values(values: dict[str, str]) -> list[str]:
         else:
             secret_values.append(value.lower())
 
-    if len(secret_values) != len(set(secret_values)):
+    if len(secret_values) == len(SECRET_KEYS) and len(secret_values) != len(set(secret_values)):
         errors.append("Each required secret must have a different value.")
+
+    user = values.get("POSTGRES_USER", "")
+    database = values.get("POSTGRES_DB", "")
+    if not SIMPLE_IDENTIFIER.fullmatch(user):
+        errors.append("POSTGRES_USER must be a simple SQL identifier.")
+    if not SIMPLE_IDENTIFIER.fullmatch(database):
+        errors.append("POSTGRES_DB must be a simple SQL identifier.")
+
+    if HEX_SECRET.fullmatch(values.get("POSTGRES_PASSWORD", "")) and user and database:
+        expected_dsn = (
+            f"postgresql://{quote(user, safe='')}:{quote(values['POSTGRES_PASSWORD'], safe='')}"
+            f"@postgres:5432/{quote(database, safe='')}"
+        )
+        if values.get("RAVEN_PG_DSN") != expected_dsn:
+            errors.append("RAVEN_PG_DSN does not match the configured Postgres user/database/password.")
 
     bind_address = values.get("RAVEN_BIND_ADDRESS", "127.0.0.1")
     try:
