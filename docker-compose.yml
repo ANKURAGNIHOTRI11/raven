@@ -164,8 +164,8 @@ services:
     command:
       - --model=${RAVEN_VLLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
       - --served-model-name=${RAVEN_VLLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
-      - --max-model-len=${RAVEN_VLLM_MAX_LEN:-16384}
-      - --gpu-memory-utilization=${RAVEN_VLLM_GPU_FRAC:-0.72}
+      - --max-model-len=${RAVEN_VLLM_MAX_LEN:-8192}
+      - --gpu-memory-utilization=${RAVEN_VLLM_GPU_FRAC:-0.55}
       - --enable-prefix-caching
       - --disable-log-requests
     environment:
