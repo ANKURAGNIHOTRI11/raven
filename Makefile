@@ -25,7 +25,7 @@ build: validate-env base ## validate config and build every service image
 
 up: build ## build and start the platform
 	$(COMPOSE) up -d
-	@set -a; . ./.env; set +a; echo "console:    http://127.0.0.1:$\{RAVEN_HTTP_PORT:-8088}/"; echo "Grafana:    http://127.0.0.1:$\{RAVEN_HTTP_PORT:-8088}/grafana/ (via SSH tunnel recommended)"
+	@set -a; . ./.env; set +a; printf "console:    http://127.0.0.1:%s/\n" "$${RAVEN_HTTP_PORT:-8088}"; printf "Grafana:    http://127.0.0.1:%s/grafana/ (via SSH tunnel recommended)\n" "$${RAVEN_HTTP_PORT:-8088}"
 	@echo "Neo4j HTTP/Bolt and MinIO Console are bound to loopback by default."
 
 down: ## stop everything, keep the data
@@ -52,7 +52,7 @@ seed: validate-env ## re-apply seed/assets.json through the crawler's startup se
 	$(COMPOSE) restart crawler
 
 smoke: validate-env ## run end-to-end health and authentication checks
-	@set -a; . ./.env; set +a; ./deploy/smoke_test.sh
+	@set -a; . ./.env; set +a; RAVEN_BASE="http://127.0.0.1:$${RAVEN_HTTP_PORT:-8088}" ./deploy/smoke_test.sh
 
 backup: validate-env ## dump Postgres and the Neo4j graph
 	@set -a; . ./.env; set +a; \
