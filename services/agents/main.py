@@ -76,35 +76,61 @@ async def sandbox_check(plan: RemediationPlan, asset: dict, client: httpx.AsyncC
 
 async def persist(decision: AgentDecision) -> None:
     async with db.conn() as c:
-        await c.execute(
-            """INSERT INTO agent_decisions (decision_id,assessment_id,cve_id,asset_id,action,
-               confidence,rationale,verifier_verdict,verifier_notes,grounded,citations,plan,
-               blast_radius,auto_approved,guard_events,model_versions,decided_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16::jsonb,now())
-               ON CONFLICT (decision_id) DO NOTHING""",
-            decision.decision_id, decision.assessment_id, decision.cve_id, decision.asset_id,
-            decision.action.value, decision.confidence, decision.rationale,
-            decision.verifier_verdict, decision.verifier_notes, decision.grounded,
-            decision.citations,
-            orjson.dumps(decision.plan.model_dump() if decision.plan else None).decode(),
-            decision.blast_radius, decision.auto_approved, decision.guard_events,
-            orjson.dumps(decision.model_versions).decode(),
-        )
-        if decision.plan:
-            await c.execute(
-                """INSERT INTO approvals (decision_id, state, rollback_plan)
-                   VALUES ($1,$2,$3::jsonb)""",
-                decision.decision_id,
-                "approved" if decision.auto_approved else "pending",
-                orjson.dumps({"steps": decision.plan.rollback}).decode(),
+        async with c.transaction():
+            inserted_id = await c.fetchval(
+                """INSERT INTO agent_decisions
+                   (decision_id,assessment_id,cve_id,asset_id,action,
+                    confidence,rationale,verifier_verdict,verifier_notes,
+                    grounded,citations,plan,blast_radius,auto_approved,
+                    guard_events,model_versions,decided_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
+                           $12::jsonb,$13,$14,$15,$16::jsonb,now())
+                   ON CONFLICT (decision_id) DO NOTHING
+                   RETURNING decision_id""",
+                decision.decision_id, decision.assessment_id,
+                decision.cve_id, decision.asset_id,
+                decision.action.value, decision.confidence,
+                decision.rationale, decision.verifier_verdict,
+                decision.verifier_notes, decision.grounded,
+                decision.citations,
+                orjson.dumps(
+                    decision.plan.model_dump() if decision.plan else None
+                ).decode(),
+                decision.blast_radius, decision.auto_approved,
+                decision.guard_events,
+                orjson.dumps(decision.model_versions).decode(),
             )
-        await c.execute(
-            "INSERT INTO audit_log (actor, action, subject, detail) VALUES "
-            "($1,$2,$3,$4::jsonb)",
-            "decision-engine", decision.action.value, f"{decision.cve_id}@{decision.asset_id}",
-            orjson.dumps({"confidence": decision.confidence,
-                          "auto_approved": decision.auto_approved}).decode(),
-        )
+
+            # A repeated decision must not create another approval
+            # or duplicate audit event.
+            if inserted_id is None:
+                return
+
+            # Abstentions must never enter the remediation approval queue.
+            if decision.plan:
+                await c.execute(
+                    """INSERT INTO approvals
+                       (decision_id, state, rollback_plan)
+                       VALUES ($1,$2,$3::jsonb)""",
+                    decision.decision_id,
+                    "approved" if decision.auto_approved else "pending",
+                    orjson.dumps(
+                        {"steps": decision.plan.rollback}
+                    ).decode(),
+                )
+
+            await c.execute(
+                """INSERT INTO audit_log
+                   (actor, action, subject, detail)
+                   VALUES ($1,$2,$3,$4::jsonb)""",
+                "decision-engine",
+                decision.action.value,
+                f"{decision.cve_id}@{decision.asset_id}",
+                orjson.dumps({
+                    "confidence": decision.confidence,
+                    "auto_approved": decision.auto_approved,
+                }).decode(),
+            )
 
 
 async def handle(a: RiskAssessment, producer: bus.Producer, client: httpx.AsyncClient) -> None:
