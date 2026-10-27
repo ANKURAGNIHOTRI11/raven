@@ -5,11 +5,10 @@
 #   make gpu-check confirm the selected NVIDIA GPU is visible in containers
 #   make logs      follow everything
 #
-# GPU placement: vLLM, embedder, normalizer BERT, and GNN share
-# RAVEN_GPU_DEVICE by default. The conservative vLLM default (55%) is intended
-# as a starting point for an 80 GB card; measure VRAM use on the target host.
-# On a shared GPU, do not raise the vLLM fraction without moving other models
-# elsewhere or disabling their GPU workloads.
+# GPU placement: each model service has its own RAVEN_*_GPU_DEVICE setting.
+# They all default to device 0; set different indices to split workers across
+# cards. The conservative vLLM default (55%) is a starting point for an 80 GB
+# card, not a guarantee of fit; measure VRAM use on the target host.
 
 x-common: &common
   restart: unless-stopped
