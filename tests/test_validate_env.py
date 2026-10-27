@@ -1,9 +1,19 @@
+from urllib.parse import quote
+
 from deploy.validate_env import SECRET_KEYS, validate_values
 
 
 def valid_values():
     values = {key: f"{i:064x}" for i, key in enumerate(SECRET_KEYS, start=1)}
-    values["RAVEN_BIND_ADDRESS"] = "127.0.0.1"
+    values.update({
+        "POSTGRES_USER": "raven",
+        "POSTGRES_DB": "raven",
+        "RAVEN_BIND_ADDRESS": "127.0.0.1",
+    })
+    values["RAVEN_PG_DSN"] = (
+        f"postgresql://raven:{quote(values['POSTGRES_PASSWORD'], safe='')}"
+        "@postgres:5432/raven"
+    )
     return values
 
 
@@ -29,3 +39,9 @@ def test_non_ipv4_bind_address_fails():
     values = valid_values()
     values["RAVEN_BIND_ADDRESS"] = "not-an-address"
     assert any("RAVEN_BIND_ADDRESS" in error for error in validate_values(values))
+
+
+def test_database_dsn_mismatch_fails():
+    values = valid_values()
+    values["RAVEN_PG_DSN"] = "postgresql://wrong:wrong@postgres:5432/raven"
+    assert any("RAVEN_PG_DSN" in error for error in validate_values(values))
