@@ -106,7 +106,7 @@ async def persist(decision: AgentDecision) -> None:
             if inserted_id is None:
                 return
 
-            # Abstentions must never enter the remediation approval queue.
+            # Keep any attached plan available for human review on a new decision.
             if decision.plan:
                 await c.execute(
                     """INSERT INTO approvals
