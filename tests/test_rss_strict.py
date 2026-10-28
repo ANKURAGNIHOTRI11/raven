@@ -40,3 +40,14 @@ def test_rss_1_0_rdf_root_is_accepted():
 
 def test_feed_with_items_but_no_cves_still_returns_empty_list():
     assert parse_rss(f"<rss><channel>{ITEM}</channel></rss>".encode()) == []
+
+def test_xml10_forbidden_control_bytes_in_article_text_are_sanitized():
+    feed = (
+        b"<rss><channel><item><title>Security advisory</title>"
+        b"<description>Quoted terminal output:\x0bCVE-2026-12345</description>"
+        b"</item></channel></rss>"
+    )
+    records = parse_rss(feed)
+    assert [r["cve_id"] for r in records] == ["CVE-2026-12345"]
+    assert "\x0b" not in records[0]["description"]
+

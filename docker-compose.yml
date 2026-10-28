@@ -2,29 +2,66 @@
 # requirements are Docker, the NVIDIA Container Toolkit and a working driver.
 #
 #   make up        build base images, start the platform
-#   make gpu-check confirm the H200 is visible inside a container
+#   make gpu-check confirm the selected NVIDIA GPU is visible in containers
 #   make logs      follow everything
 #
-# GPU sharing: vLLM, the embedder, the normalizer's BERT pass and the GNN all
-# target device 0. vLLM is capped at 72% of VRAM so the other three fit
-# alongside it on a single 141 GB H200. Raise RAVEN_VLLM_GPU_FRAC only if you
-# move the smaller models off the card.
+# GPU placement: each model service has its own RAVEN_*_GPU_DEVICE setting.
+# They all default to device 0; set different indices to split workers across
+# cards. The conservative vLLM default (55%) is a starting point for an 80 GB
+# card, not a guarantee of fit; measure VRAM use on the target host.
 
 x-common: &common
   restart: unless-stopped
-  env_file: [.env]
   networks: [raven]
   logging:
     driver: json-file
     options: {max-size: "20m", max-file: "5"}
 
-x-gpu: &gpu
+# Explicit environment allow-lists: the secret-bearing .env is used for Compose
+# interpolation but is NOT injected wholesale into every container.
+x-app-env: &app_env
+  RAVEN_KAFKA_BOOTSTRAP: redpanda:9092
+  RAVEN_LOG_LEVEL: ${RAVEN_LOG_LEVEL:-INFO}
+  RAVEN_METRICS_PORT: ${RAVEN_METRICS_PORT:-9100}
+
+x-db-env: &db_env
+  <<: *app_env
+  RAVEN_PG_DSN: ${RAVEN_PG_DSN:?Run make env to generate the local .env}
+
+x-gpu-vllm: &gpu_vllm
   deploy:
     resources:
       reservations:
         devices:
           - driver: nvidia
-            device_ids: ["${RAVEN_GPU_DEVICE:-0}"]
+            device_ids: ["${RAVEN_VLLM_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-embedder: &gpu_embedder
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_EMBEDDER_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-normalizer: &gpu_normalizer
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_NORMALIZER_GPU_DEVICE:-0}"]
+            capabilities: [gpu]
+
+x-gpu-gnn: &gpu_gnn
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            device_ids: ["${RAVEN_GNN_GPU_DEVICE:-0}"]
             capabilities: [gpu]
 
 networks:
@@ -74,13 +111,13 @@ services:
     image: postgres:16.4-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-raven}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-raven}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run make env to generate the local .env}
       POSTGRES_DB: ${POSTGRES_DB:-raven}
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raven}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-raven} -d ${POSTGRES_DB:-raven}"]
       interval: 10s
       retries: 12
 
@@ -88,12 +125,12 @@ services:
     <<: *common
     image: neo4j:5.24-community
     environment:
-      NEO4J_AUTH: "neo4j/${RAVEN_NEO4J_PASSWORD:-raven-graph}"
+      NEO4J_AUTH: "${RAVEN_NEO4J_USER:-neo4j}/${RAVEN_NEO4J_PASSWORD:?Run make env to generate the local .env}"
       NEO4J_server_memory_heap_max__size: 4G
       NEO4J_server_memory_pagecache_size: 2G
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
     volumes: [neo4jdata:/data]
-    ports: ["7474:7474"]
+    ports: ["${RAVEN_BIND_ADDRESS:-127.0.0.1}:${RAVEN_NEO4J_HTTP_PORT:-7474}:7474", "${RAVEN_BIND_ADDRESS:-127.0.0.1}:${RAVEN_NEO4J_BOLT_PORT:-7687}:7687"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null || exit 1"]
       interval: 15s
@@ -136,9 +173,9 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${RAVEN_MINIO_ACCESS_KEY:-raven}
-      MINIO_ROOT_PASSWORD: ${RAVEN_MINIO_SECRET_KEY:-raven-secret}
+      MINIO_ROOT_PASSWORD: ${RAVEN_MINIO_SECRET_KEY:?Run make env to generate the local .env}
     volumes: [miniodata:/data]
-    ports: ["9001:9001"]
+    ports: ["${RAVEN_BIND_ADDRESS:-127.0.0.1}:${RAVEN_MINIO_CONSOLE_PORT:-9001}:9001"]
 
   redis:
     <<: *common
@@ -147,20 +184,15 @@ services:
 
   # ------------------------------------------------------------ model plane
   vllm:
-    <<: [*common, *gpu]
-    # vLLM publishes amd64-only images on Docker Hub - there is no arm64
-    # build to pull for a Grace/GH200 host. vLLM's own docs document a
-    # native GH200 build path (see deploy/build_vllm_gh200.sh, which wraps
-    # it); run that script once before `make up` to produce this image.
-    # DO NOT change this back to vllm/vllm-openai:* on this host - it will
-    # exec-format-error at container start (wrong architecture entirely,
-    # not something a healthcheck retry or restart policy can fix).
-    image: raven/vllm-gh200:local
+    <<: [*common, *gpu_vllm]
+    # Official vLLM publishes a multi-architecture release image. Set
+    # RAVEN_VLLM_IMAGE only if intentionally using a custom local build.
+    image: ${RAVEN_VLLM_IMAGE:-vllm/vllm-openai:v0.32.0-cu129}
     command:
       - --model=${RAVEN_VLLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
       - --served-model-name=${RAVEN_VLLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
-      - --max-model-len=${RAVEN_VLLM_MAX_LEN:-16384}
-      - --gpu-memory-utilization=${RAVEN_VLLM_GPU_FRAC:-0.72}
+      - --max-model-len=${RAVEN_VLLM_MAX_LEN:-8192}
+      - --gpu-memory-utilization=${RAVEN_VLLM_GPU_FRAC:-0.55}
       - --enable-prefix-caching
       - --disable-log-requests
     environment:
@@ -176,9 +208,12 @@ services:
       start_period: 900s
 
   embedder:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_embedder]
     build: {context: ., dockerfile: services/embedder/Dockerfile}
     image: raven/embedder:1.0
+    environment:
+      <<: *app_env
+      RAVEN_EMBEDDING_MODEL: ${RAVEN_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
     volumes: [models:/models]
     depends_on: [qdrant]
 
@@ -187,6 +222,19 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/crawler/Dockerfile}
     image: raven/crawler:1.0
+    environment:
+      <<: *db_env
+      RAVEN_NVD_API_KEY: ${RAVEN_NVD_API_KEY:-}
+      RAVEN_GITHUB_TOKEN: ${RAVEN_GITHUB_TOKEN:-}
+      RAVEN_OTX_API_KEY: ${RAVEN_OTX_API_KEY:-}
+      RAVEN_MINIO_ENDPOINT: minio:9000
+      RAVEN_MINIO_ACCESS_KEY: ${RAVEN_MINIO_ACCESS_KEY:-raven}
+      RAVEN_MINIO_SECRET_KEY: ${RAVEN_MINIO_SECRET_KEY:?Run make env to generate the local .env}
+      RAVEN_CMDB_SEED_PATH: ${RAVEN_CMDB_SEED_PATH:-/seed/assets.json}
+      RAVEN_FEED_LOOKBACK_DAYS: ${RAVEN_FEED_LOOKBACK_DAYS:-7}
+      RAVEN_CRAWL_INTERVAL_SECONDS: ${RAVEN_CRAWL_INTERVAL_SECONDS:-3600}
+      RAVEN_CRAWL_CONCURRENCY: ${RAVEN_CRAWL_CONCURRENCY:-8}
+      RAVEN_HARVEST_TIMEOUT: ${RAVEN_HARVEST_TIMEOUT:-300}
     volumes: ["./seed:/seed:ro"]
     depends_on:
       postgres: {condition: service_healthy}
@@ -197,6 +245,15 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/telegram_watcher/Dockerfile}
     image: raven/telegram-watcher:1.0
+    environment:
+      <<: *db_env
+      RAVEN_MINIO_ENDPOINT: minio:9000
+      RAVEN_MINIO_ACCESS_KEY: ${RAVEN_MINIO_ACCESS_KEY:-raven}
+      RAVEN_MINIO_SECRET_KEY: ${RAVEN_MINIO_SECRET_KEY:?Run make env to generate the local .env}
+      RAVEN_TELEGRAM_API_ID: ${RAVEN_TELEGRAM_API_ID:-}
+      RAVEN_TELEGRAM_API_HASH: ${RAVEN_TELEGRAM_API_HASH:-}
+      RAVEN_TELEGRAM_SESSION: ${RAVEN_TELEGRAM_SESSION:-}
+      RAVEN_TELEGRAM_CHANNELS: ${RAVEN_TELEGRAM_CHANNELS:-}
     # Idles harmlessly (see main.py) if RAVEN_TELEGRAM_API_ID/HASH/SESSION
     # or RAVEN_TELEGRAM_CHANNELS are unset - safe to leave in the stack.
     depends_on:
@@ -205,9 +262,14 @@ services:
       minio: {condition: service_started}
 
   normalizer:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_normalizer]
     build: {context: ., dockerfile: services/normalizer/Dockerfile}
     image: raven/normalizer:1.0
+    environment:
+      <<: *db_env
+      RAVEN_OPENSEARCH_URL: http://opensearch:9200
+      RAVEN_CLASSIFIER_MODEL: ${RAVEN_CLASSIFIER_MODEL:-distilbert-base-uncased}
+      RAVEN_HF_HOME: /models
     volumes: [models:/models]
     depends_on:
       postgres: {condition: service_healthy}
@@ -217,14 +279,28 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/graph_builder/Dockerfile}
     image: raven/graph-builder:1.0
+    environment:
+      <<: *app_env
+      RAVEN_NEO4J_URI: bolt://neo4j:7687
+      RAVEN_NEO4J_USER: ${RAVEN_NEO4J_USER:-neo4j}
+      RAVEN_NEO4J_PASSWORD: ${RAVEN_NEO4J_PASSWORD:?Run make env to generate the local .env}
+      RAVEN_QDRANT_URL: http://qdrant:6333
+      RAVEN_EMBEDDING_MODEL: ${RAVEN_EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}
     depends_on:
       neo4j: {condition: service_healthy}
       redpanda: {condition: service_healthy}
 
   gnn-engine:
-    <<: [*common, *gpu]
+    <<: [*common, *gpu_gnn]
     build: {context: ., dockerfile: services/gnn_engine/Dockerfile}
     image: raven/gnn-engine:1.0
+    environment:
+      <<: *db_env
+      RAVEN_NEO4J_URI: bolt://neo4j:7687
+      RAVEN_NEO4J_USER: ${RAVEN_NEO4J_USER:-neo4j}
+      RAVEN_NEO4J_PASSWORD: ${RAVEN_NEO4J_PASSWORD:?Run make env to generate the local .env}
+      RAVEN_GNN_RECOMPUTE_SECONDS: ${RAVEN_GNN_RECOMPUTE_SECONDS:-300}
+      RAVEN_GNN_CKPT_DIR: /models/gnn
     volumes: [models:/models]
     depends_on:
       neo4j: {condition: service_healthy}
@@ -234,6 +310,8 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/risk_engine/Dockerfile}
     image: raven/risk-engine:1.0
+    environment:
+      <<: *db_env
     depends_on:
       postgres: {condition: service_healthy}
       redpanda: {condition: service_healthy}
@@ -242,12 +320,25 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/llm_gateway/Dockerfile}
     image: raven/llm-gateway:1.0
+    environment:
+      <<: *app_env
+      RAVEN_QDRANT_URL: http://qdrant:6333
+      RAVEN_VLLM_BASE_URL: http://vllm:8000/v1
+      RAVEN_VLLM_MODEL: ${RAVEN_VLLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
+      RAVEN_VERIFIER_BASE_URL: http://vllm:8000/v1
+      RAVEN_VERIFIER_MODEL: ${RAVEN_VERIFIER_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
     depends_on: [qdrant, embedder]
 
   agents:
     <<: *common
     build: {context: ., dockerfile: services/agents/Dockerfile}
     image: raven/agents:1.0
+    environment:
+      <<: *db_env
+      RAVEN_AUTONOMY_CONFIDENCE_THRESHOLD: ${RAVEN_AUTONOMY_CONFIDENCE_THRESHOLD:-0.85}
+      RAVEN_AUTONOMY_MAX_BLAST_RADIUS: ${RAVEN_AUTONOMY_MAX_BLAST_RADIUS:-3}
+      RAVEN_ABSTAIN_CONFIDENCE_FLOOR: ${RAVEN_ABSTAIN_CONFIDENCE_FLOOR:-0.55}
+    networks: [raven, sandbox_net]
     depends_on:
       postgres: {condition: service_healthy}
       redpanda: {condition: service_healthy}
@@ -256,7 +347,7 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/sandbox/Dockerfile}
     image: raven/sandbox:1.0
-    networks: [raven, sandbox_net]
+    networks: [sandbox_net]
     read_only: true
     tmpfs: ["/tmp:size=512m"]
     cap_drop: [ALL]
@@ -268,6 +359,10 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/remediation/Dockerfile}
     image: raven/remediation:1.0
+    environment:
+      <<: *db_env
+      RAVEN_APPLY_HOOK: ${RAVEN_APPLY_HOOK:-}
+      RAVEN_ARTEFACT_DIR: /artefacts
     volumes: [artefacts:/artefacts]
     depends_on:
       postgres: {condition: service_healthy}
@@ -276,6 +371,10 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/feedback/Dockerfile}
     image: raven/feedback:1.0
+    environment:
+      <<: *db_env
+      RAVEN_RETRAIN_AFTER_LABELS: ${RAVEN_RETRAIN_AFTER_LABELS:-200}
+      RAVEN_MODEL_TRUST_FLOOR: ${RAVEN_MODEL_TRUST_FLOOR:-0.55}
     depends_on:
       postgres: {condition: service_healthy}
 
@@ -283,6 +382,9 @@ services:
     <<: *common
     build: {context: ., dockerfile: services/api/Dockerfile}
     image: raven/api:1.0
+    environment:
+      <<: *db_env
+      RAVEN_API_TOKEN: ${RAVEN_API_TOKEN:?Run make env to generate the local .env}
     depends_on:
       postgres: {condition: service_healthy}
       redpanda: {condition: service_healthy}
@@ -299,8 +401,10 @@ services:
     <<: *common
     image: grafana/grafana:11.3.1
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-raven}
+      GF_SECURITY_ADMIN_PASSWORD: ${RAVEN_GRAFANA_PASSWORD:?Run make env to generate the local .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - grafanadata:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -310,5 +414,5 @@ services:
     <<: *common
     image: nginx:1.27-alpine
     volumes: ["./infra/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
-    ports: ["8443:8443", "8088:8088"]
+    ports: ["${RAVEN_BIND_ADDRESS:-127.0.0.1}:${RAVEN_HTTP_PORT:-8088}:8088"]
     depends_on: [api, grafana]

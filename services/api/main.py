@@ -7,6 +7,7 @@ the floor, not the ceiling.
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,12 +21,15 @@ from pydantic import BaseModel
 
 from raven_common import bus, db, topics
 from raven_common.logging import configure
+from raven_common.approval_policy import has_actionable_plan
 from raven_common.models import FeedbackEvent
 from raven_common.settings import get_settings
 
 settings = get_settings()
 log = configure("api", settings.log_level)
-API_TOKEN = os.environ.get("RAVEN_API_TOKEN", "change-me")
+API_TOKEN = os.environ.get("RAVEN_API_TOKEN", "")
+if len(API_TOKEN) < 32 or API_TOKEN.startswith("change-me"):
+    raise RuntimeError("RAVEN_API_TOKEN must be configured with a generated secret before startup.")
 UI_DIR = Path("/app/ui")
 
 app = FastAPI(title="RAVEN API", version="1.0.0", default_response_class=ORJSONResponse)
@@ -45,7 +49,7 @@ async def shutdown() -> None:
 
 async def auth(authorization: str = Header(default="")) -> str:
     token = authorization.removeprefix("Bearer ").strip()
-    if token != API_TOKEN:
+    if not secrets.compare_digest(token, API_TOKEN):
         raise HTTPException(401, "invalid or missing bearer token")
     return token
 
@@ -70,7 +74,8 @@ async def healthz() -> dict:
             await c.fetchval("SELECT 1")
         return {"status": "ok"}
     except Exception as exc:
-        raise HTTPException(503, str(exc)[:200]) from exc
+        log.error("database_healthcheck_failed", error=str(exc)[:200])
+        raise HTTPException(503, "database unavailable") from exc
 
 
 @app.get("/api/overview")
@@ -280,7 +285,7 @@ class ApprovalDecision(BaseModel):
 async def decide(approval_id: str, body: ApprovalDecision, _: str = Depends(auth)) -> dict:
     async with db.conn() as c:
         row = await c.fetchrow(
-            "SELECT ap.*, d.cve_id, d.asset_id, d.confidence, d.model_versions "
+            "SELECT ap.*, d.cve_id, d.asset_id, d.confidence, d.model_versions, d.plan "
             "FROM approvals ap JOIN agent_decisions d USING (decision_id) "
             "WHERE ap.approval_id=$1", approval_id,
         )
@@ -288,6 +293,11 @@ async def decide(approval_id: str, body: ApprovalDecision, _: str = Depends(auth
             raise HTTPException(404, "unknown approval")
         if row["state"] != "pending":
             raise HTTPException(409, f"approval already {row['state']}")
+        if body.approve and not has_actionable_plan(row["plan"]):
+            raise HTTPException(
+                409,
+                "Decision has no valid stored remediation plan and cannot be approved",
+            )
         await c.execute(
             "UPDATE approvals SET state=$2, approver=$3, reason=$4, decided_at=now() "
             "WHERE approval_id=$1",

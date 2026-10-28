@@ -82,6 +82,12 @@ GITIGNORE_BLOCK = """
 **/node_modules/**
 **/raven_redhat_*_before.json
 **/raven_redhat_*_publish.jsonl
+**/*.bak*
+**/*.orig
+**/*.swp
+**/*.swo
+**/*.pre-modified-order-*
+/backups/
 """.lstrip()
 MARKER = "# Safe local-only exclusions added by upload_raven_to_github.py"
 
@@ -113,6 +119,8 @@ def run(cmd: list[str], *, cwd: Path | None = None, check: bool = True,
 
 def excluded_reason(name: str) -> str | None:
     low = name.lower()
+    if re.search(r"(?:\.bak[0-9]*(?:[.-][^/]*)?|\.orig|\.swp|\.swo|\.pre-modified-order-[^/]*)$", low):
+        return "temporary backup/editor swap file"
     if low in SKIP_EXACT_FILES:
         return "credential/local account file"
     if low == ".env" or (low.startswith(".env.") and low not in {".env.example", ".env.template"}):

@@ -1,4 +1,4 @@
-# Shared base for the GPU-side RAVEN workers (H200 / sm_90, CUDA 12.4).
+# Shared base for the GPU-side RAVEN workers (A100 sm_80, H100/H200 sm_90, CUDA 12.4).
 FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1 \
@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/models \
-    TORCH_CUDA_ARCH_LIST="9.0"
+    TORCH_CUDA_ARCH_LIST="8.0;9.0"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-dev python3-pip build-essential curl ca-certificates git \

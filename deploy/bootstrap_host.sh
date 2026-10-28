@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare a bare-metal Ubuntu 22.04 host with an H200 to run RAVEN.
+# Prepare a bare-metal Ubuntu 22.04 host with a supported NVIDIA GPU to run RAVEN.
 # Idempotent: safe to re-run.
 set -euo pipefail
 
@@ -9,15 +9,18 @@ need_root
 
 log "Checking the NVIDIA driver"
 if ! command -v nvidia-smi >/dev/null; then
-  echo "nvidia-smi not found. Install the driver first (H200 needs 550 or newer):"
-  echo "  apt-get install -y nvidia-driver-560-server && reboot"
+  echo "nvidia-smi not found. Install a supported NVIDIA driver before running this bootstrap."
+  echo "The default vLLM CUDA 12.9 image expects NVIDIA Linux driver 575.51.03 or newer."
   exit 1
 fi
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
 
-DRIVER_MAJOR=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | cut -d. -f1)
-if (( DRIVER_MAJOR < 550 )); then
-  echo "Driver $DRIVER_MAJOR is too old for Hopper CUDA 12.4 containers. Upgrade to 550+."
+DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)
+MIN_DRIVER_VERSION=575.51.03
+LOWEST_VERSION=$(printf '%s\n' "$MIN_DRIVER_VERSION" "$DRIVER_VERSION" | sort -V | head -n1)
+if [[ "$LOWEST_VERSION" != "$MIN_DRIVER_VERSION" ]]; then
+  echo "Driver $DRIVER_VERSION is older than the supported CUDA 12.9 baseline ($MIN_DRIVER_VERSION)."
+  echo "Upgrade the NVIDIA driver and reboot before running this bootstrap."
   exit 1
 fi
 
@@ -56,4 +59,4 @@ sysctl -w fs.file-max=1048576
 log "Verifying GPU access from a container"
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L
 
-log "Host is ready. Next: cp .env.example .env, edit the change-me values, then make up"
+log "Host is ready. Next: make env, edit optional .env settings, then make up"
