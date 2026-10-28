@@ -213,6 +213,18 @@ services:
       postgres: {condition: service_healthy}
       redpanda: {condition: service_healthy}
 
+  # Optional EPIC-01 metadata enrichment. Not started by the default stack.
+  # Dry-run is the worker default; writes require an explicit --apply argument.
+  enrichment-worker:
+    <<: *common
+    profiles: ["enrichment"]
+    build: {context: ., dockerfile: services/enrichment_worker/Dockerfile}
+    image: raven/enrichment-worker:1.0
+    environment:
+      RAVEN_SERVICE_NAME: enrichment-worker
+    depends_on:
+      postgres: {condition: service_healthy}
+
   graph-builder:
     <<: *common
     build: {context: ., dockerfile: services/graph_builder/Dockerfile}
