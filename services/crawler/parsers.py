@@ -224,6 +224,15 @@ def _mention_windows(text: str, cve_id: str):
         yield text[max(0, m.start() - RSS_CONTEXT_WINDOW): m.end() + RSS_CONTEXT_WINDOW]
 
 
+def _strip_xml10_invalid_controls(raw: bytes) -> bytes:
+    """Remove ASCII control bytes forbidden by XML 1.0 from untrusted feed text.
+
+    The original response is archived before parsing, so this narrowly scoped
+    repair does not destroy the source evidence. TAB, LF and CR are preserved.
+    """
+    return re.sub(rb"[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", b"", raw)
+
+
 def parse_rss(raw: bytes) -> list[dict]:
     """Media and PSIRT RSS/Atom. Only CVE mentions are lifted; the prose is kept
     as low-trust context, never as an authoritative field.
@@ -235,8 +244,12 @@ def parse_rss(raw: bytes) -> list[dict]:
     from the whole article, so one "exploited in the wild" in a long roundup
     does not mark every CVE in it.
     """
+    # RSS article bodies can quote terminal output or HTTP requests containing
+    # XML 1.0-forbidden control bytes. Repair only those bytes; keep strict XML
+    # parsing and the existing feed-root validation.
+    parseable = _strip_xml10_invalid_controls(raw)
     try:
-        root = ET.fromstring(raw)
+        root = ET.fromstring(parseable)
     except ET.ParseError as exc:
         raise NotAFeed(f"not valid XML ({str(exc)[:60]}); starts {_peek(raw)!r}") from exc
     root_name = root.tag.split("}")[-1]
