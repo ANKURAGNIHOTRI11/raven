@@ -76,7 +76,7 @@ def parse_nvd(data: dict[str, Any], cve_id: str) -> dict[str, Any]:
                             and _text(d.get("value"))), None)
         refs = _url_refs([r for r in cve.get("references", []) if isinstance(r, dict)])
         return {
-            "title": _text(cve.get("sourceIdentifier")) if False else None,
+            "title": None,
             "description": description,
             "published": cve.get("published"),
             "modified": cve.get("lastModified"),
