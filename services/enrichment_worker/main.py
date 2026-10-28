@@ -38,6 +38,29 @@ def _text(value: Any, limit: int = MAX_TEXT) -> str | None:
     return value[:limit]
 
 
+def _timestamp(value: Any) -> datetime | None:
+    """Convert ISO-8601 feed timestamps to datetime objects for asyncpg.
+
+    PostgreSQL timestamptz parameters are encoded by asyncpg from Python
+    datetime instances, not strings. Invalid or absent timestamps are ignored.
+    """
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        candidate = value.strip()
+        if candidate.endswith(("Z", "z")):
+            candidate = candidate[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _url_refs(values: Any) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     if not isinstance(values, list):
@@ -289,8 +312,8 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                               normalized_at = now()
                             WHERE cve_id = $1
                             """,
-                            cve_id, title, description, profile.get("published"),
-                            profile.get("modified"), json.dumps(refs),
+                            cve_id, title, description, _timestamp(profile.get("published")),
+                            _timestamp(profile.get("modified")), json.dumps(refs),
                         )
                         await conn.execute(
                             """
