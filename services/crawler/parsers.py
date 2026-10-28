@@ -230,7 +230,7 @@ def _strip_xml10_invalid_controls(raw: bytes) -> bytes:
     The original response is archived before parsing, so this narrowly scoped
     repair does not destroy the source evidence. TAB, LF and CR are preserved.
     """
-    return re.sub(rb"[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]", b"", raw)
+    return re.sub(rb"[\x00-\x08\x0B\x0C\x0E-\x1F]", b"", raw)
 
 
 def parse_rss(raw: bytes) -> list[dict]:
