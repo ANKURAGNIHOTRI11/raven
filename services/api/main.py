@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from raven_common import bus, db, topics
 from raven_common.logging import configure
+from raven_common.approval_policy import has_actionable_plan
 from raven_common.models import FeedbackEvent
 from raven_common.settings import get_settings
 
@@ -284,7 +285,7 @@ class ApprovalDecision(BaseModel):
 async def decide(approval_id: str, body: ApprovalDecision, _: str = Depends(auth)) -> dict:
     async with db.conn() as c:
         row = await c.fetchrow(
-            "SELECT ap.*, d.cve_id, d.asset_id, d.confidence, d.model_versions "
+            "SELECT ap.*, d.cve_id, d.asset_id, d.confidence, d.model_versions, d.plan "
             "FROM approvals ap JOIN agent_decisions d USING (decision_id) "
             "WHERE ap.approval_id=$1", approval_id,
         )
@@ -292,6 +293,11 @@ async def decide(approval_id: str, body: ApprovalDecision, _: str = Depends(auth
             raise HTTPException(404, "unknown approval")
         if row["state"] != "pending":
             raise HTTPException(409, f"approval already {row['state']}")
+        if body.approve and not has_actionable_plan(row["plan"]):
+            raise HTTPException(
+                409,
+                "Decision has no valid stored remediation plan and cannot be approved",
+            )
         await c.execute(
             "UPDATE approvals SET state=$2, approver=$3, reason=$4, decided_at=now() "
             "WHERE approval_id=$1",
