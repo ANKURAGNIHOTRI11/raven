@@ -245,7 +245,9 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 dates = bool(profile.get("published") or profile.get("modified"))
                 missing_title = not (row.get("title") or "").strip() or (row.get("title") or "").strip().casefold() == cve_id.casefold()
                 missing_description = not (row.get("description") or "").strip()
-                missing_refs = not row.get("references_json") or row.get("references_json") == []
+                refs_raw = row.get("references_json")
+                # asyncpg returns JSONB as text unless a custom codec is installed.
+                missing_refs = refs_raw in (None, "", "[]", [])
                 fill_title = bool(missing_title and title)
                 fill_description = bool(missing_description and description)
                 fill_dates = bool((row.get("published") is None and profile.get("published")) or
@@ -313,6 +315,8 @@ async def main() -> None:
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if args.apply:
         settings = get_settings()
+        if not settings.pg_dsn:
+            raise RuntimeError("RAVEN_PG_DSN is required; refusing to create audit schema")
         pool = await asyncpg.create_pool(settings.pg_dsn, min_size=1, max_size=1)
         try:
             async with pool.acquire() as conn:
