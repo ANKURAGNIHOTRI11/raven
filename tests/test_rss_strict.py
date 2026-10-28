@@ -44,10 +44,10 @@ def test_feed_with_items_but_no_cves_still_returns_empty_list():
 def test_xml10_forbidden_control_bytes_in_article_text_are_sanitized():
     feed = (
         b"<rss><channel><item><title>Security advisory</title>"
-        b"<description>Quoted terminal output:\\x0bCVE-2026-12345</description>"
+        b"<description>Quoted terminal output:\x0bCVE-2026-12345</description>"
         b"</item></channel></rss>"
     )
     records = parse_rss(feed)
     assert [r["cve_id"] for r in records] == ["CVE-2026-12345"]
-    assert "\\x0b" not in records[0]["description"]
+    assert "\x0b" not in records[0]["description"]
 
