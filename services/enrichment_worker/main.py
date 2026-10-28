@@ -166,6 +166,11 @@ async def fetch_profile(client: httpx.AsyncClient, cve_id: str, nvd_key: str = "
         profile["references"].extend(part.get("references", []))
     profile["references"] = _url_refs(profile["references"])
     profile["sources"] = sorted(set(profile["sources"]))
+    # NVD commonly has a description but no title. Derive a display title only
+    # from the first sentence of that source-backed description; never invent facts.
+    if not profile.get("title") and profile.get("description"):
+        first_sentence = re.split(r"(?<=[.!?])\\s+", profile["description"], maxsplit=1)[0]
+        profile["title"] = _text(first_sentence, 240)
     return profile
 
 
