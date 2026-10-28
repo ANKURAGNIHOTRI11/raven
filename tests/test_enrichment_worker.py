@@ -1,4 +1,4 @@
-from services.enrichment_worker.main import needs_enrichment, parse_ghsa, parse_nvd, parse_osv, _url_refs
+from datetime import datetime, timezone\n\nfrom services.enrichment_worker.main import (\n    needs_enrichment, parse_ghsa, parse_nvd, parse_osv, _timestamp, _url_refs,\n)
 
 
 def test_nvd_extracts_english_description_and_references():
@@ -53,3 +53,17 @@ def test_incomplete_criteria():
     assert not needs_enrichment({"cve_id": "CVE-2026-12345", "title": "Title",
                                  "description": "Details", "published": "2026-01-01",
                                  "modified": "2026-01-02", "references_json": [{"url": "https://x"}]})
+
+
+
+def test_timestamp_converts_nvd_iso_string_for_asyncpg():
+    result = _timestamp("1999-12-30T05:00:00.000")
+    assert isinstance(result, datetime)
+    assert result == datetime(1999, 12, 30, 5, 0, tzinfo=timezone.utc)
+
+
+def test_timestamp_handles_z_and_offset_and_invalid_values():
+    assert _timestamp("2026-01-01T00:00:00Z") == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert _timestamp("2026-01-01T02:00:00+02:00") == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert _timestamp("not-a-date") is None
+    assert _timestamp(None) is None
