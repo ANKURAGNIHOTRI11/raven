@@ -61,3 +61,8 @@ backup: ## dump Postgres and the Neo4j graph
 	$(COMPOSE) exec -T postgres pg_dump -U $${POSTGRES_USER:-raven} raven | gzip > backups/raven-$$(date +%F).sql.gz
 	$(COMPOSE) exec -T neo4j neo4j-admin database dump neo4j --to-stdout > backups/graph-$$(date +%F).dump
 	@echo "wrote backups/"
+
+.PHONY: check
+check:
+	python -m pytest -q --ignore=tests/ingest_gate_harness.py --ignore=tests/test_chains.py
+	python -m compileall -q services libs deploy
