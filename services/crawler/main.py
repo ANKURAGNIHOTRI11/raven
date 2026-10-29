@@ -102,7 +102,7 @@ def build_request(src: dict) -> tuple[str, dict, dict | None]:
 
 
 PAGINATED_PARSERS = {"ghsa", "otx"}
-MAX_PAGES = 5
+MAX_PAGES = 30   # ~3000 GHSA advisories / 1500 OTX pulses per poll; a warning is logged if hit
 
 
 async def fetch_paginated(client: httpx.AsyncClient, src: dict) -> list:
@@ -112,7 +112,8 @@ async def fetch_paginated(client: httpx.AsyncClient, src: dict) -> list:
     url, params, headers = build_request(src)
     items: list = []
     next_url = url
-    for _ in range(MAX_PAGES):
+    capped = False
+    for page_no in range(MAX_PAGES):
         r = await client.get(next_url, params=params if next_url == url else None,
                               headers=headers, timeout=90)
         r.raise_for_status()
@@ -124,12 +125,17 @@ async def fetch_paginated(client: httpx.AsyncClient, src: dict) -> list:
             if not m or not batch:
                 break
             next_url = m.group(1)
+            capped = page_no == MAX_PAGES - 1
         else:  # otx
             batch = data.get("results", [])
             items.extend(batch)
             next_url = data.get("next")
             if not next_url:
                 break
+            capped = page_no == MAX_PAGES - 1
+    if capped:
+        log.warning("paginated_cap_hit", source=src.get("source_id"), pages=MAX_PAGES,
+                    records=len(items))
     return items
 
 
@@ -163,26 +169,69 @@ async def fetch_osv(client: httpx.AsyncClient, src: dict) -> bytes:
             vulns.append(vr.json())
     return json.dumps({"vulns": vulns}).encode()
 
-async def fetch_once(client: httpx.AsyncClient, src: dict) -> bytes:
-    if src["parser"] == "osv":
-        return await fetch_osv(client, src)
-    url, params, headers = build_request(src)
-    if url.startswith("file://"):
-        return Path(url.replace("file://", "")).read_bytes()
-    delay = 1.0
+async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict | None,
+                          headers: dict, delays: tuple[float, ...] = (1.0, 2.0, 4.0)) -> bytes:
+    """GET with jittered backoff. Retries timeouts, connection errors, 429 and 5xx;
+    other 4xx (bad key, bad request) fail immediately instead of burning retries."""
     last: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(len(delays) + 1):
         try:
             r = await client.get(url, params=params or None, headers=headers, timeout=90)
             if r.status_code == 429 or 500 <= r.status_code < 600:
                 raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
             r.raise_for_status()
             return r.content
-        except Exception as exc:
+        except httpx.HTTPStatusError as exc:
             last = exc
-            await asyncio.sleep(delay + random.uniform(0, 0.8))
-            delay *= 2
-    raise RuntimeError(f"fetch failed after retries: {last}")
+            code = exc.response.status_code
+            if code != 429 and code < 500:
+                raise RuntimeError(f"fetch failed (HTTP {code}, not retryable): {exc}") from exc
+        except Exception as exc:  # timeouts, resets, DNS
+            last = exc
+        if attempt < len(delays):
+            await asyncio.sleep(delays[attempt] + random.uniform(0, 0.8))
+    raise RuntimeError(f"fetch failed after retries: {type(last).__name__}: {last}")
+
+
+NVD_MAX_PAGES = 50  # 50 x 2000 = 100k records; a hard stop against a runaway loop
+
+
+async def fetch_nvd(client: httpx.AsyncClient, src: dict) -> bytes:
+    """NVD returns at most resultsPerPage records per call. Without paging, a busy
+    window (>2000 modified CVEs) is silently truncated. Merge all pages into one
+    document so the existing parser sees a normal NVD response."""
+    url, params, headers = build_request(src)
+    pause = 0.8 if "apiKey" in headers else 6.5   # stay under NVD's rate limits
+    merged: dict | None = None
+    start = 0
+    for _ in range(NVD_MAX_PAGES):
+        raw = await _get_with_retry(client, url, {**params, "startIndex": start}, headers,
+                                    delays=(5.0, 15.0, 45.0))
+        page = json.loads(raw)
+        if merged is None:
+            merged = page
+        else:
+            merged["vulnerabilities"].extend(page.get("vulnerabilities", []))
+        got = int(page.get("resultsPerPage") or 0)
+        total = int(page.get("totalResults") or 0)
+        start += got
+        if got == 0 or start >= total:
+            break
+        await asyncio.sleep(pause)
+    else:
+        log.warning("nvd_page_cap_hit", source=src.get("source_id"), fetched=start)
+    return json.dumps(merged or {"vulnerabilities": []}).encode()
+
+
+async def fetch_once(client: httpx.AsyncClient, src: dict) -> bytes:
+    if src["parser"] == "osv":
+        return await fetch_osv(client, src)
+    if src["parser"] == "nvd":
+        return await fetch_nvd(client, src)
+    url, params, headers = build_request(src)
+    if url.startswith("file://"):
+        return Path(url.replace("file://", "")).read_bytes()
+    return await _get_with_retry(client, url, params, headers)
 
 
 async def harvest(client: httpx.AsyncClient, src: dict, producer: bus.Producer) -> int:
