@@ -307,3 +307,20 @@ def test_invalid_source_timestamps_do_not_count_as_fillable_dates():
     from services.enrichment_worker.main import _timestamp
 
     assert _timestamp("not-a-timestamp") is None
+
+
+
+def test_systemd_units_keep_dry_run_and_live_apply_separate():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    dry_run = (root / "deploy/systemd/raven-enrichment-worker.service").read_text()
+    live_apply = (root / "deploy/systemd/raven-enrichment-apply@.service").read_text()
+
+    assert "--limit 25" in dry_run
+    assert "--apply" not in dry_run
+    assert "--limit %i --apply" in live_apply
+    for unit in (dry_run, live_apply):
+        assert "NoNewPrivileges=true" in unit
+        assert "ProtectSystem=strict" in unit
+        assert "ProtectHome=true" in unit
