@@ -37,6 +37,8 @@ python3 -m venv .venv
 
 Create a root-readable environment file at `/etc/raven/raven-enrichment.env`. It must contain at least `RAVEN_PG_DSN`; add `RAVEN_NVD_API_KEY` and `RAVEN_GITHUB_TOKEN` when available. Do not commit this file or put secret values in the unit files.
 
+The systemd worker runs in the host network namespace. If PostgreSQL is still a Compose-only service, the host cannot use the Compose DNS name `postgres`. Configure a host-loopback-only database port (for example, `127.0.0.1:15432:5432`) and use `127.0.0.1:15432` in `RAVEN_PG_DSN`, or point the DSN at an already reachable native database. Do **not** bind PostgreSQL to `0.0.0.0` or a public interface just for this worker. Confirm the endpoint is reachable before starting the service.
+
 Install the units after adjusting their `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ExecStart` paths for the host:
 
 ```bash
