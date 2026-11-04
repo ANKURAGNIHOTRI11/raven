@@ -21,7 +21,11 @@ import asyncpg
 import httpx
 
 from raven_common.settings import get_settings
-from services.enrichment_worker.public_sources import parse_circl_record, parse_cve_org_record
+
+try:  # direct script execution (systemd) and package import (tests)
+    from .public_sources import parse_circl_record, parse_cve_org_record
+except ImportError:  # pragma: no cover - exercised by the host systemd entrypoint
+    from public_sources import parse_circl_record, parse_cve_org_record
 
 LOG = logging.getLogger("raven.enrichment_worker")
 CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,7}$", re.I)
