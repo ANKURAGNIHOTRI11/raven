@@ -90,14 +90,18 @@ def parse_nvd(data: dict[str, Any], cve_id: str) -> dict[str, Any]:
     if not isinstance(items, list):
         return {}
     for item in items:
-        cve = item.get("cve", {}) if isinstance(item, dict) else {}
-        if str(cve.get("id", "")).upper() != cve_id:
+        cve = item.get("cve") if isinstance(item, dict) else None
+        if not isinstance(cve, dict):
+            continue
+        if str(cve.get("id", "")).upper() != cve_id.upper():
             continue
         descriptions = cve.get("descriptions", [])
+        if not isinstance(descriptions, list):
+            descriptions = []
         description = next((_text(d.get("value")) for d in descriptions
                             if isinstance(d, dict) and d.get("lang") == "en"
                             and _text(d.get("value"))), None)
-        refs = _url_refs([r for r in cve.get("references", []) if isinstance(r, dict)])
+        refs = _url_refs(cve.get("references", []))
         return {
             "title": None,
             "description": description,
@@ -116,6 +120,8 @@ def parse_ghsa(data: Any, cve_id: str) -> dict[str, Any]:
         if not isinstance(advisory, dict):
             continue
         identifiers = advisory.get("identifiers", [])
+        if not isinstance(identifiers, list):
+            identifiers = []
         ids = {str(x.get("value", "")).upper() for x in identifiers if isinstance(x, dict)}
         if cve_id not in ids and str(advisory.get("cve_id", "")).upper() != cve_id:
             continue
@@ -134,7 +140,8 @@ def parse_ghsa(data: Any, cve_id: str) -> dict[str, Any]:
 
 
 def parse_osv(data: dict[str, Any], cve_id: str) -> dict[str, Any]:
-    aliases = [str(x).upper() for x in data.get("aliases", []) if isinstance(x, str)]
+    raw_aliases = data.get("aliases", [])
+    aliases = [x.upper() for x in raw_aliases if isinstance(x, str)] if isinstance(raw_aliases, list) else []
     if cve_id not in aliases and str(data.get("id", "")).upper() != cve_id:
         return {}
     refs = _url_refs(data.get("references", []))
@@ -255,10 +262,10 @@ async def _get_osv(client: httpx.AsyncClient, cve_id: str, headers: dict):
         if not isinstance(identifier_value, str) or not identifier_value.strip():
             return None, False
         aliases = data.get("aliases", [])
-        if not isinstance(aliases, list):
+        if not isinstance(aliases, list) or any(not isinstance(alias, str) for alias in aliases):
             return None, False
         identifier = identifier_value.upper()
-        aliases = [str(alias).upper() for alias in aliases]
+        aliases = [alias.upper() for alias in aliases]
         if identifier == cve_id.upper() or cve_id.upper() in aliases:
             return data, True
         return None, True
@@ -293,6 +300,51 @@ def _can_record_no_match(profile: dict[str, Any]) -> bool:
     return profile.get("_lookup_complete") is True
 
 
+def _candidate_query(audit_table_exists: bool) -> str:
+    """Build a read-only selection query that also works before audit-table creation.
+
+    A seven-day cooldown applies to every recorded apply attempt, including
+    partial fills, so an unavailable date field does not cause hot-loop refetches.
+    """
+    audit_filter = ""
+    if audit_table_exists:
+        audit_filter = """
+          AND NOT EXISTS (
+            SELECT 1
+            FROM vulnerability_enrichment_audit AS recent_audit
+            WHERE recent_audit.cve_id = vulnerabilities.cve_id
+              AND recent_audit.completed_at >= now() - INTERVAL '7 days'
+          )
+        """
+    return f"""
+        SELECT cve_id, title, description, published, modified, references_json
+        FROM vulnerabilities
+        WHERE cve_id ~* '^CVE-[0-9]{{4}}-[0-9]{{4,7}}$'
+          AND (
+            NULLIF(BTRIM(title), '') IS NULL
+            OR UPPER(BTRIM(title)) = UPPER(BTRIM(cve_id))
+            OR NULLIF(BTRIM(description), '') IS NULL
+            OR published IS NULL
+            OR modified IS NULL
+            OR references_json IS NULL
+            OR references_json IN ('null'::jsonb, '[]'::jsonb, '{{}}'::jsonb)
+          )
+          {audit_filter}
+        ORDER BY
+          CASE
+            WHEN NULLIF(BTRIM(title), '') IS NULL
+              OR UPPER(BTRIM(title)) = UPPER(BTRIM(cve_id))
+              OR NULLIF(BTRIM(description), '') IS NULL
+            THEN 0
+            WHEN published IS NULL OR modified IS NULL
+            THEN 1
+            ELSE 2
+          END,
+          cve_id
+        LIMIT $1
+        """
+
+
 async def run_batch(limit: int, apply: bool) -> dict[str, int]:
     settings = get_settings()
     if not settings.pg_dsn:
@@ -304,39 +356,10 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
     pool = await asyncpg.create_pool(settings.pg_dsn, min_size=1, max_size=3, command_timeout=30)
     try:
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT cve_id, title, description, published, modified, references_json
-                FROM vulnerabilities
-                WHERE cve_id ~* '^CVE-[0-9]{4}-[0-9]{4,7}$'
-                  AND (
-                    NULLIF(BTRIM(title), '') IS NULL OR UPPER(BTRIM(title)) = UPPER(BTRIM(cve_id))
-                    OR NULLIF(BTRIM(description), '') IS NULL OR published IS NULL OR modified IS NULL
-                    OR references_json IS NULL
-                    OR references_json IN ('null'::jsonb, '[]'::jsonb, '{}'::jsonb)
-                  )
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM vulnerability_enrichment_audit AS recent_audit
-                    WHERE recent_audit.cve_id = vulnerabilities.cve_id
-                      AND recent_audit.applied IS FALSE
-                      AND recent_audit.completed_at >= now() - INTERVAL '7 days'
-                  )
-                ORDER BY
-                    CASE
-                        WHEN NULLIF(BTRIM(title), '') IS NULL
-                          OR UPPER(BTRIM(title)) = UPPER(BTRIM(cve_id))
-                          OR NULLIF(BTRIM(description), '') IS NULL
-                        THEN 0
-                        WHEN published IS NULL OR modified IS NULL
-                        THEN 1
-                        ELSE 2
-                    END,
-                    cve_id
-                LIMIT $1
-                """,
-                limit,
+            audit_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.vulnerability_enrichment_audit') IS NOT NULL"
             )
+            rows = await conn.fetch(_candidate_query(bool(audit_table_exists)), limit)
         counters["selected"] = len(rows)
         async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=True,
                                      headers={"User-Agent": USER_AGENT}) as client:
@@ -364,8 +387,12 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 missing_refs = _references_missing(refs_raw)
                 fill_title = bool(missing_title and title)
                 fill_description = bool(missing_description and description)
-                fill_dates = bool((row.get("published") is None and profile.get("published")) or
-                                  (row.get("modified") is None and profile.get("modified")))
+                published = _timestamp(profile.get("published"))
+                modified = _timestamp(profile.get("modified"))
+                fill_dates = bool(
+                    (row.get("published") is None and published is not None)
+                    or (row.get("modified") is None and modified is not None)
+                )
                 fill_refs = bool(missing_refs and refs)
                 if not (fill_title or fill_description or fill_dates or fill_refs):
                     counters["no_match"] += 1
@@ -416,8 +443,7 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                               normalized_at = now()
                             WHERE cve_id = $1
                             """,
-                            cve_id, title, description, _timestamp(profile.get("published")),
-                            _timestamp(profile.get("modified")), json.dumps(refs),
+                            cve_id, title, description, published, modified, json.dumps(refs),
                         )
                         await conn.execute(
                             """
