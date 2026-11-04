@@ -1,4 +1,13 @@
-from datetime import datetime, timezone\n\nfrom services.enrichment_worker.main import (\n    needs_enrichment, parse_ghsa, parse_nvd, parse_osv, _timestamp, _url_refs,\n)
+import asyncio
+from datetime import datetime, timezone
+
+import httpx
+
+from services.enrichment_worker.main import (
+    needs_enrichment, parse_ghsa, parse_nvd, parse_osv,
+    _can_record_no_match, _get_json, _get_osv, _timestamp, _url_refs,
+    fetch_profile,
+)
 
 
 def test_nvd_extracts_english_description_and_references():
@@ -55,7 +64,6 @@ def test_incomplete_criteria():
                                  "modified": "2026-01-02", "references_json": [{"url": "https://x"}]})
 
 
-
 def test_timestamp_converts_nvd_iso_string_for_asyncpg():
     result = _timestamp("1999-12-30T05:00:00.000")
     assert isinstance(result, datetime)
@@ -67,3 +75,197 @@ def test_timestamp_handles_z_and_offset_and_invalid_values():
     assert _timestamp("2026-01-01T02:00:00+02:00") == datetime(2026, 1, 1, tzinfo=timezone.utc)
     assert _timestamp("not-a-date") is None
     assert _timestamp(None) is None
+
+
+def test_needs_enrichment_treats_empty_reference_representations_as_missing():
+    complete_row = {
+        "cve_id": "CVE-2024-1234",
+        "title": "Meaningful vulnerability title",
+        "description": "Meaningful description",
+        "published": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "modified": datetime(2024, 1, 2, tzinfo=timezone.utc),
+    }
+    for refs in (None, "", "null", "[]", "{}", [], {}):
+        row = {**complete_row, "references_json": refs}
+        assert needs_enrichment(row), f"Expected missing references for {refs!r}"
+
+
+def test_get_osv_fetches_vulnerability_by_id():
+    cve_id = "CVE-2024-1234"
+    requests = []
+
+    async def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={
+            "id": cve_id,
+            "aliases": [cve_id],
+            "summary": "Sample vulnerability",
+        })
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_osv(client, cve_id, {})
+
+    result, lookup_completed = asyncio.run(fetch())
+    assert lookup_completed is True
+    assert result is not None
+    assert result["id"] == cve_id
+    assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert str(requests[0].url) == f"https://api.osv.dev/v1/vulns/{cve_id}"
+
+
+def test_fetch_profile_uses_github_token():
+    cve_id = "CVE-2024-1234"
+    requests = []
+
+    async def handler(request: httpx.Request):
+        requests.append(request)
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        return httpx.Response(404)
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id, github_token="test-github-token")
+
+    profile = asyncio.run(fetch())
+    github_requests = [r for r in requests if r.url.host == "api.github.com"]
+    assert len(github_requests) == 1
+    assert github_requests[0].headers["authorization"] == "Bearer test-github-token"
+    assert profile["_lookup_complete"] is True
+    assert _can_record_no_match(profile) is True
+
+
+def test_parse_ghsa_uses_nvd_publication_date():
+    cve_id = "CVE-1999-0011"
+    data = [{
+        "cve_id": cve_id,
+        "identifiers": [{"type": "CVE", "value": cve_id}],
+        "summary": "BIND denial of service vulnerability",
+        "description": "A relevant vulnerability description.",
+        "published_at": "2022-05-03T03:06:00Z",
+        "updated_at": "2023-02-01T05:00:56Z",
+        "nvd_published_at": "1999-09-29T00:00:00Z",
+        "references": [],
+    }]
+    result = parse_ghsa(data, cve_id)
+    assert result["published"] == "1999-09-29T00:00:00Z"
+    assert result["modified"] is None
+
+
+def test_parse_ghsa_does_not_use_github_dates_as_cve_dates():
+    cve_id = "CVE-1999-0011"
+    data = [{
+        "cve_id": cve_id,
+        "identifiers": [{"type": "CVE", "value": cve_id}],
+        "summary": "BIND denial of service vulnerability",
+        "description": "A relevant vulnerability description.",
+        "published_at": "2022-05-03T03:06:00Z",
+        "updated_at": "2023-02-01T05:00:56Z",
+        "references": [],
+    }]
+    result = parse_ghsa(data, cve_id)
+    assert result["published"] is None
+    assert result["modified"] is None
+
+
+def test_fetch_profile_keeps_partial_data_but_marks_timeout_incomplete():
+    cve_id = "CVE-2024-1234"
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            raise httpx.ReadTimeout("simulated NVD timeout", request=request)
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[{
+                "cve_id": cve_id,
+                "identifiers": [{"type": "CVE", "value": cve_id}],
+                "summary": "Partial GHSA title",
+                "description": "Useful description from GHSA.",
+                "nvd_published_at": "2024-01-01T00:00:00Z",
+                "references": [],
+            }])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["title"] == "Partial GHSA title"
+    assert profile["description"] == "Useful description from GHSA."
+    assert profile["_lookup_complete"] is False
+    assert profile["_failed_sources"] == ["nvd"]
+    assert _can_record_no_match(profile) is False
+
+
+def test_no_match_cooldown_requires_all_source_lookups_to_complete():
+    assert _can_record_no_match({"_lookup_complete": True}) is True
+    assert _can_record_no_match({"_lookup_complete": False}) is False
+    assert _can_record_no_match({}) is False
+
+
+def test_get_json_distinguishes_not_found_from_http_failures():
+    async def run_status(status):
+        async def handler(request: httpx.Request):
+            if status == 200:
+                return httpx.Response(200, content=b"not-json")
+            return httpx.Response(status)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_json(client, "https://example.test/source")
+
+    missing, missing_ok = asyncio.run(run_status(404))
+    _, rate_limit_ok = asyncio.run(run_status(429))
+    _, server_error_ok = asyncio.run(run_status(503))
+    _, invalid_json_ok = asyncio.run(run_status(200))
+    assert missing is None and missing_ok is True
+    assert rate_limit_ok is False
+    assert server_error_ok is False
+    assert invalid_json_ok is False
+
+    async def run_null_json():
+        async def handler(request: httpx.Request):
+            return httpx.Response(200, json=None)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_json(client, "https://example.test/source")
+
+    null_data, null_completed = asyncio.run(run_null_json())
+    assert null_data is None
+    assert null_completed is False
+
+
+def test_get_osv_distinguishes_not_found_from_service_failure():
+    async def run_status(status):
+        async def handler(request: httpx.Request):
+            return httpx.Response(status)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_osv(client, "CVE-2024-1234", {})
+
+    missing, missing_ok = asyncio.run(run_status(404))
+    failed, failed_ok = asyncio.run(run_status(503))
+    assert missing is None and missing_ok is True
+    assert failed is None and failed_ok is False
+
+
+def test_fetch_profile_rejects_unexpected_nvd_and_ghsa_response_shapes():
+    cve_id = "CVE-2024-1234"
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"unexpected": "schema"})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json={"unexpected": "schema"})
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["_lookup_complete"] is False
+    assert profile["_failed_sources"] == ["nvd", "ghsa"]
+    assert _can_record_no_match(profile) is False
