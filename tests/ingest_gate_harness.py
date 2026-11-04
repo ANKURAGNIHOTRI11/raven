@@ -39,14 +39,32 @@ class _Log:
 
 
 def load_normalizer():
-    _rt.bootstrap = lambda service: (types.SimpleNamespace(classifier_model="stub"), _Log())
-    stub = types.ModuleType("enrich")
-    stub.Enricher = lambda *a, **k: object()
-    sys.modules["enrich"] = stub
-    spec = importlib.util.spec_from_file_location("normalizer_main", ROOT / "services/normalizer/main.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    # The normalizer constructs settings and its enricher at import time.
+    # Stub only during that import, then restore shared process state.
+    original_bootstrap = _rt.bootstrap
+    enrich_was_present = "enrich" in sys.modules
+    original_enrich = sys.modules.get("enrich")
+
+    try:
+        _rt.bootstrap = lambda service: (
+            types.SimpleNamespace(classifier_model="stub"), _Log()
+        )
+        stub = types.ModuleType("enrich")
+        stub.Enricher = lambda *a, **k: object()
+        sys.modules["enrich"] = stub
+
+        spec = importlib.util.spec_from_file_location(
+            "normalizer_main", ROOT / "services/normalizer/main.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        _rt.bootstrap = original_bootstrap
+        if enrich_was_present:
+            sys.modules["enrich"] = original_enrich
+        else:
+            sys.modules.pop("enrich", None)
 
 
 N = load_normalizer()

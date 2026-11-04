@@ -62,7 +62,7 @@ def test_hanging_source_is_cut_off_and_recorded_as_failure():
 
     events = asyncio.run(go())
     assert [sid for sid, _ in events["bad"]] == ["hung"]
-    assert isinstance(events["bad"][0][1], TimeoutError)
+    assert isinstance(events["bad"][0][1], asyncio.TimeoutError)
     assert events["ok"] == []
 
 
@@ -208,3 +208,25 @@ def test_future_last_success_cannot_park_a_source_beyond_one_interval():
 def test_in_memory_schedule_still_wins_over_history():
     s = with_history("a", NOW - timedelta(hours=5), poll_seconds=3600)   # history says due
     assert due_sources([s], {"a": NOW + timedelta(seconds=60)}, set(), NOW) == []
+
+
+
+def test_runner_supports_source_specific_timeouts():
+    async def work(s):
+        await asyncio.sleep(0.05)
+        return s["source_id"]
+
+    async def go():
+        runner, events = make_runner(
+            work,
+            concurrency=2,
+            timeout=lambda source: 0.2 if source["parser"] == "nvd" else 0.01,
+        )
+        runner.dispatch(src("nvd", "nvd"))
+        runner.dispatch(src("ordinary", "rss"))
+        await runner.drain()
+        return events
+
+    events = asyncio.run(go())
+    assert [sid for sid, _ in events["ok"]] == ["nvd"]
+    assert [sid for sid, _ in events["bad"]] == ["ordinary"]
