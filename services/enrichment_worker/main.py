@@ -272,8 +272,8 @@ async def fetch_profile(
         circl_delay = max(0.0, float(os.getenv("RAVEN_CIRCL_REQUEST_DELAY_SECONDS", default_delay)))
     except ValueError:
         circl_delay = float(default_delay)
-    # CIRCL's public instance documents 20 requests/minute anonymously and
-    # 40/minute with an API key. The worker processes CVEs sequentially.
+    # The worker processes CVEs sequentially; keep a conservative configurable
+    # delay between public CIRCL requests to reduce rate-limit pressure.
     if circl_delay:
         await asyncio.sleep(circl_delay)
 
@@ -319,14 +319,27 @@ async def fetch_profile(
         cve_org_data is None or isinstance(cve_org_data, dict)
     )
 
+    circl_part = (
+        parse_circl_record(circl_data, cve_id, source_url=circl_url)
+        if isinstance(circl_data, dict) else {}
+    )
+    cve_org_part = (
+        parse_cve_org_record(cve_org_data, cve_id, source_url=cve_org_url)
+        if isinstance(cve_org_data, dict) else {}
+    )
+    # A 200 response with an unexpected schema or a different CVE ID is not
+    # a definitive negative result. Fail closed for the source completeness gate.
+    if circl_data is not None and not circl_part:
+        circl_ok = False
+    if cve_org_data is not None and not cve_org_part:
+        cve_org_ok = False
+
     parts = [
         parse_nvd(nvd_data, cve_id) if isinstance(nvd_data, dict) else {},
         parse_ghsa(ghsa_data, cve_id) if isinstance(ghsa_data, list) else {},
         parse_osv(osv_data, cve_id) if isinstance(osv_data, dict) else {},
-        parse_circl_record(circl_data, cve_id, source_url=circl_url)
-        if isinstance(circl_data, dict) else {},
-        parse_cve_org_record(cve_org_data, cve_id, source_url=cve_org_url)
-        if isinstance(cve_org_data, dict) else {},
+        circl_part,
+        cve_org_part,
     ]
     lookup_status = {
         "nvd": nvd_ok,
