@@ -185,7 +185,11 @@ def test_fetch_profile_keeps_partial_data_but_marks_timeout_incomplete():
                 "nvd_published_at": "2024-01-01T00:00:00Z",
                 "references": [],
             }])
-        if request.url.host == "api.osv.dev":
+        if request.url.host in {
+            "api.osv.dev",
+            "vulnerability.circl.lu",
+            "cveawg.mitre.org",
+        }:
             return httpx.Response(404)
         raise AssertionError(f"Unexpected host: {request.url.host}")
 
@@ -324,3 +328,90 @@ def test_systemd_units_keep_dry_run_and_live_apply_separate():
         assert "NoNewPrivileges=true" in unit
         assert "ProtectSystem=strict" in unit
         assert "ProtectHome=true" in unit
+
+
+
+def test_fetch_profile_uses_public_registry_fallbacks_and_records_evidence():
+    cve_id = "CVE-2026-12345"
+    cve_record = {
+        "cveMetadata": {
+            "cveId": cve_id,
+            "state": "PUBLISHED",
+            "datePublished": "2026-01-02T00:00:00Z",
+            "dateUpdated": "2026-02-03T00:00:00Z",
+        },
+        "containers": {
+            "cna": {
+                "title": "Public fallback title",
+                "descriptions": [{"lang": "en", "value": "Public fallback description."}],
+                "references": [{"url": "https://vendor.example/advisory"}],
+            }
+        },
+    }
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": []})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host == "vulnerability.circl.lu":
+            return httpx.Response(200, json={"vulnerability": cve_record})
+        if request.url.host == "cveawg.mitre.org":
+            return httpx.Response(200, json=cve_record)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["title"] == "Public fallback title"
+    assert profile["description"] == "Public fallback description."
+    assert profile["_lookup_complete"] is True
+    assert profile["_failed_sources"] == []
+    assert "CIRCL Vulnerability-Lookup" in profile["sources"]
+    assert "CVE.org CVE Services" in profile["sources"]
+    assert len(profile["field_evidence"]["title"]) == 2
+    assert profile["_conflicting_fields"] == {}
+
+
+def test_fetch_profile_marks_disagreement_between_public_sources():
+    cve_id = "CVE-2026-12345"
+    circl_record = {
+        "cveMetadata": {"cveId": cve_id, "state": "PUBLISHED"},
+        "containers": {
+            "cna": {
+                "descriptions": [{"lang": "en", "value": "Description from CIRCL."}],
+                "references": [],
+            }
+        },
+    }
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": [{
+                "cve": {
+                    "id": cve_id,
+                    "descriptions": [{"lang": "en", "value": "Different description from NVD."}],
+                    "references": [],
+                }
+            }]})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host == "vulnerability.circl.lu":
+            return httpx.Response(200, json=circl_record)
+        if request.url.host == "cveawg.mitre.org":
+            return httpx.Response(404)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert "description" in profile["_conflicting_fields"]
+    assert len(profile["_conflicting_fields"]["description"]) == 2
