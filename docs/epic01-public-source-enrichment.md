@@ -78,6 +78,21 @@ adapter to find candidate URLs, but must never be treated as source evidence or
 written directly into vulnerability records. Retrieved pages and reference links
 are untrusted input; only validated structured records are eligible for this worker.
 
+## Read-only review preview
+
+From the repository root, run:
+
+```bash
+PYTHONPATH="$PWD/libs/raven_common:$PWD" \
+  .venv/bin/python tools/enrichment_preview.py --limit 10
+```
+
+The preview opens PostgreSQL using a read-only transaction and prints each
+candidate's source status, field evidence, conflicts, unverified search leads and
+the exact missing fields proposed for fill. It does not create/alter audit schema,
+update vulnerability rows, or publish events. Use the same host environment
+variables as the worker; never print or commit secret values.
+
 ## Operator validation
 
 1. Run the existing worker in dry-run mode.
