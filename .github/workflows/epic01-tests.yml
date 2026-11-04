@@ -1,0 +1,41 @@
+name: EPIC-01 regression tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "services/enrichment_worker/**"
+      - "services/crawler/**"
+      - "tests/test_enrichment_worker.py"
+      - "tests/test_nvd_paging.py"
+      - "tests/test_scheduler.py"
+      - "libs/raven_common/**"
+      - ".github/workflows/epic01-tests.yml"
+  push:
+    branches: [epic01/cve-metadata-enrichment]
+
+permissions:
+  contents: read
+
+jobs:
+  epic01-regression-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test and shared runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -e libs/raven_common
+      - name: Run EPIC-01 focused regression suites
+        run: |
+          python -m pytest -q \
+            tests/test_enrichment_worker.py \
+            tests/test_nvd_paging.py \
+            tests/test_scheduler.py

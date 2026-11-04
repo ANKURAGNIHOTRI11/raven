@@ -73,7 +73,7 @@ class BoundedRunner:
         on_success: Callable[[dict, Any], Awaitable[None]],
         on_failure: Callable[[dict, Exception], Awaitable[None]],
         concurrency: int = 8,
-        timeout: float = 300.0,
+        timeout: float | Callable[[dict], float] = 300.0,
     ) -> None:
         self._work, self._ok, self._bad = work, on_success, on_failure
         self._sem = asyncio.Semaphore(max(1, concurrency))
@@ -95,7 +95,10 @@ class BoundedRunner:
         # spent queued behind other sources never counts against this one.
         async with self._sem:
             try:
-                result = await asyncio.wait_for(self._work(src), self._timeout)
+                timeout = (
+                    self._timeout(src) if callable(self._timeout) else self._timeout
+                )
+                result = await asyncio.wait_for(self._work(src), timeout=timeout)
             except Exception as exc:  # includes TimeoutError
                 await self._safe(self._bad, src, exc)
             else:

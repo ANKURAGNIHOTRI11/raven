@@ -36,6 +36,10 @@ BREAKER_COOLDOWN = timedelta(minutes=15)
 settings, log = bootstrap(SERVICE)
 
 
+class IncompleteFetchError(RuntimeError):
+    """A source response was truncated or could not be paged completely."""
+
+
 def doc_id_for(source_id: str, payload: dict) -> str:
     key = f"{source_id}:{payload.get('cve_id','')}:{json.dumps(payload, sort_keys=True, default=str)}"
     return hashlib.sha256(key.encode()).hexdigest()[:40]
@@ -50,15 +54,19 @@ async def load_sources() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def mark_success(source_id: str, accepted: int) -> None:
+
+async def mark_success(
+    source_id: str,
+    accepted: int,
+    checkpoint_at: datetime | None = None,
+) -> None:
     async with db.conn() as c:
         await c.execute(
-            "UPDATE sources SET last_success=now(), consecutive_failures=0, "
-            "circuit_open_until=NULL, last_error=NULL, "
+            "UPDATE sources SET last_success=COALESCE($3, now()), "
+            "consecutive_failures=0, circuit_open_until=NULL, last_error=NULL, "
             "accepted_records=accepted_records+$2 WHERE source_id=$1",
-            source_id, accepted,
+            source_id, accepted, checkpoint_at,
         )
-
 
 async def mark_failure(source_id: str, error: str) -> None:
     async with db.conn() as c:
@@ -75,61 +83,126 @@ async def mark_failure(source_id: str, error: str) -> None:
             log.warning("circuit_open", source=source_id, until=until.isoformat())
 
 
+
 def build_request(src: dict) -> tuple[str, dict, dict | None]:
-    """Returns (url, params, headers)."""
-    since = (datetime.now(timezone.utc) - timedelta(days=settings.feed_lookback_days))
-    url, params, headers = src["url"], {}, {"User-Agent": "RAVEN/1.0 (+security-intel)"}
+    """Build a source request using an incremental NVD modification window."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    since = now - timedelta(days=settings.feed_lookback_days)
+
+    if src.get("parser") == "nvd":
+        last_success = src.get("last_success")
+        if isinstance(last_success, datetime):
+            if last_success.tzinfo is None:
+                last_success = last_success.replace(tzinfo=timezone.utc)
+            else:
+                last_success = last_success.astimezone(timezone.utc)
+            since = min(last_success, now) - timedelta(minutes=5)
+
+    since = since.replace(microsecond=0)
+    url, params, headers = src["url"], {}, {
+        "User-Agent": "RAVEN/1.0 (+security-intel)"
+    }
+
     if src["parser"] == "nvd":
         params = {
             "lastModStartDate": since.strftime("%Y-%m-%dT%H:%M:%S.000"),
-            "lastModEndDate": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000"),
+            "lastModEndDate": now.strftime("%Y-%m-%dT%H:%M:%S.000"),
             "resultsPerPage": 2000,
         }
         if settings.nvd_api_key:
             headers["apiKey"] = settings.nvd_api_key
+
     elif src["parser"] == "ghsa":
-        params = {"per_page": 100, "published": f">{since.date().isoformat()}"}
+        params = {
+            "per_page": 100,
+            "published": f">{since.date().isoformat()}",
+        }
         headers["Accept"] = "application/vnd.github+json"
         if settings.github_token:
             headers["Authorization"] = f"Bearer {settings.github_token}"
+
     elif src["parser"] == "otx":
-        params = {"limit": 50, "modified_since": since.strftime("%Y-%m-%dT%H:%M:%S")}
+        params = {
+            "limit": 50,
+            "modified_since": since.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
         if settings.otx_api_key:
             headers["X-OTX-API-KEY"] = settings.otx_api_key
+
     elif src["parser"] == "redhat":
         params = {"after": since.date().isoformat(), "per_page": 500}
+
     return url, params, headers
 
-
 PAGINATED_PARSERS = {"ghsa", "otx"}
-MAX_PAGES = 5
+MAX_PAGES = 30
 
 
 async def fetch_paginated(client: httpx.AsyncClient, src: dict) -> list:
-    """GitHub and OTX both spread results across pages rather than one
-    response. Follow up to MAX_PAGES and return the combined item list - a
-    poll cadence of 1-2 hours means a handful of pages covers the window."""
+    """Fetch every page or fail; never report a truncated feed as successful."""
     url, params, headers = build_request(src)
     items: list = []
     next_url = url
-    for _ in range(MAX_PAGES):
-        r = await client.get(next_url, params=params if next_url == url else None,
-                              headers=headers, timeout=90)
+
+    for page_no in range(MAX_PAGES):
+        r = await client.get(
+            next_url,
+            params=params if next_url == url else None,
+            headers=headers,
+            timeout=90,
+        )
         r.raise_for_status()
         data = r.json()
+
         if src["parser"] == "ghsa":
-            batch = data if isinstance(data, list) else data.get("advisories", [])
+            if isinstance(data, list):
+                batch = data
+            elif isinstance(data, dict):
+                if "advisories" not in data:
+                    raise IncompleteFetchError(
+                        "GHSA page is missing the advisories field"
+                    )
+                batch = data["advisories"]
+            else:
+                raise IncompleteFetchError("GHSA returned an invalid page shape")
+            if not isinstance(batch, list):
+                raise IncompleteFetchError("GHSA advisories field is not a list")
+
             items.extend(batch)
-            m = re.search(r'<([^>]+)>;\s*rel="next"', r.headers.get("Link", ""))
-            if not m or not batch:
+            match = re.search(
+                r'<([^>]+)>;\s*rel="next"',
+                r.headers.get("Link", ""),
+            )
+            if not match:
                 break
-            next_url = m.group(1)
-        else:  # otx
-            batch = data.get("results", [])
+            next_url = match.group(1)
+
+        else:  # OTX
+            if not isinstance(data, dict):
+                raise IncompleteFetchError("OTX returned an invalid page shape")
+            if "results" not in data:
+                raise IncompleteFetchError(
+                    "OTX page is missing the results field"
+                )
+            batch = data["results"]
+            if not isinstance(batch, list):
+                raise IncompleteFetchError("OTX results field is not a list")
             items.extend(batch)
             next_url = data.get("next")
             if not next_url:
                 break
+
+        if page_no == MAX_PAGES - 1:
+            log.error(
+                "paginated_cap_hit",
+                source=src.get("source_id"),
+                pages=MAX_PAGES,
+                records=len(items),
+            )
+            raise IncompleteFetchError(
+                f"{src.get('source_id')} exceeded MAX_PAGES={MAX_PAGES}"
+            )
+
     return items
 
 
@@ -163,26 +236,181 @@ async def fetch_osv(client: httpx.AsyncClient, src: dict) -> bytes:
             vulns.append(vr.json())
     return json.dumps({"vulns": vulns}).encode()
 
-async def fetch_once(client: httpx.AsyncClient, src: dict) -> bytes:
-    if src["parser"] == "osv":
-        return await fetch_osv(client, src)
-    url, params, headers = build_request(src)
-    if url.startswith("file://"):
-        return Path(url.replace("file://", "")).read_bytes()
-    delay = 1.0
+async def _get_with_retry(client: httpx.AsyncClient, url: str, params: dict | None,
+                          headers: dict, delays: tuple[float, ...] = (1.0, 2.0, 4.0)) -> bytes:
+    """GET with jittered backoff. Retries timeouts, connection errors, 429 and 5xx;
+    other 4xx (bad key, bad request) fail immediately instead of burning retries."""
     last: Exception | None = None
-    for attempt in range(4):
+    for attempt in range(len(delays) + 1):
         try:
             r = await client.get(url, params=params or None, headers=headers, timeout=90)
             if r.status_code == 429 or 500 <= r.status_code < 600:
                 raise httpx.HTTPStatusError("retryable", request=r.request, response=r)
             r.raise_for_status()
             return r.content
-        except Exception as exc:
+        except httpx.HTTPStatusError as exc:
             last = exc
-            await asyncio.sleep(delay + random.uniform(0, 0.8))
-            delay *= 2
-    raise RuntimeError(f"fetch failed after retries: {last}")
+            code = exc.response.status_code
+            if code != 429 and code < 500:
+                raise RuntimeError(f"fetch failed (HTTP {code}, not retryable): {exc}") from exc
+        except Exception as exc:  # timeouts, resets, DNS
+            last = exc
+        if attempt < len(delays):
+            await asyncio.sleep(delays[attempt] + random.uniform(0, 0.8))
+    raise RuntimeError(f"fetch failed after retries: {type(last).__name__}: {last}")
+
+
+
+NVD_MAX_PAGES = 50
+NVD_DATE_WINDOW = timedelta(days=119)
+
+
+async def fetch_nvd(client: httpx.AsyncClient, src: dict) -> bytes:
+    """Fetch the complete NVD range or fail without advancing its checkpoint."""
+    url, params, headers = build_request(src)
+    date_format = "%Y-%m-%dT%H:%M:%S.000"
+
+    overall_start = datetime.strptime(
+        params["lastModStartDate"], date_format
+    ).replace(tzinfo=timezone.utc)
+    overall_end = datetime.strptime(
+        params["lastModEndDate"], date_format
+    ).replace(tzinfo=timezone.utc)
+
+    if overall_start > overall_end:
+        raise IncompleteFetchError("NVD date window ends before it starts")
+
+    pause = 0.8 if "apiKey" in headers else 6.5
+    merged_page = None
+    all_vulnerabilities = []
+    aggregate_total = 0
+    window_start = overall_start
+
+    while True:
+        # A shared boundary is intentional: it prevents gaps in date coverage.
+        # Any boundary duplicate is safe for RAVEN's idempotent record handling.
+        window_end = min(window_start + NVD_DATE_WINDOW, overall_end)
+        window_params = {
+            **params,
+            "lastModStartDate": window_start.strftime(date_format),
+            "lastModEndDate": window_end.strftime(date_format),
+        }
+
+        start = 0
+        window_total = None
+        window_fetched = 0
+
+        for page_no in range(NVD_MAX_PAGES):
+            raw = await _get_with_retry(
+                client,
+                url,
+                {**window_params, "startIndex": start},
+                headers,
+                delays=(5.0, 15.0, 45.0),
+            )
+            page = json.loads(raw)
+
+            if not isinstance(page, dict):
+                raise IncompleteFetchError("NVD returned a non-object page")
+
+            vulnerabilities = page.get("vulnerabilities")
+            if not isinstance(vulnerabilities, list):
+                raise IncompleteFetchError(
+                    "NVD vulnerabilities field is not a list"
+                )
+
+            try:
+                reported_start = int(page["startIndex"])
+                got = int(page["resultsPerPage"])
+                total = int(page["totalResults"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise IncompleteFetchError(
+                    "NVD pagination metadata is missing or invalid"
+                ) from exc
+
+            if reported_start != start:
+                raise IncompleteFetchError(
+                    f"NVD offset mismatch: requested={start}, "
+                    f"received={reported_start}"
+                )
+            if got < 0 or total < 0 or got != len(vulnerabilities):
+                raise IncompleteFetchError(
+                    "NVD pagination counts do not match returned records"
+                )
+
+            if window_total is None:
+                window_total = total
+                merged_page = dict(page) if merged_page is None else merged_page
+            elif total != window_total:
+                raise IncompleteFetchError(
+                    "NVD totalResults changed during pagination"
+                )
+
+            if start + got > total:
+                raise IncompleteFetchError(
+                    "NVD page returned more records than totalResults"
+                )
+
+            all_vulnerabilities.extend(vulnerabilities)
+            window_fetched += got
+
+            if got == 0:
+                if start < total:
+                    raise IncompleteFetchError(
+                        f"NVD made no pagination progress at offset {start} "
+                        f"of {total}"
+                    )
+                break
+
+            start += got
+            if start >= total:
+                break
+
+            if page_no == NVD_MAX_PAGES - 1:
+                log.error(
+                    "nvd_page_cap_hit",
+                    source=src.get("source_id"),
+                    fetched=start,
+                    total=total,
+                )
+                raise IncompleteFetchError(
+                    f"NVD exceeded NVD_MAX_PAGES={NVD_MAX_PAGES}; "
+                    f"fetched={start}, total={total}"
+                )
+
+            await asyncio.sleep(pause)
+
+        if window_total is None or window_fetched != window_total:
+            raise IncompleteFetchError(
+                "NVD date window was not fetched completely"
+            )
+
+        aggregate_total += window_total
+        if window_end >= overall_end:
+            break
+        window_start = window_end
+
+    if merged_page is None:
+        merged_page = {}
+
+    merged_page["vulnerabilities"] = all_vulnerabilities
+    merged_page["startIndex"] = 0
+    merged_page["resultsPerPage"] = len(all_vulnerabilities)
+    merged_page["totalResults"] = aggregate_total
+
+    # on_success persists this only after parsing and publishing succeed.
+    src["_nvd_checkpoint_at"] = overall_end
+    return json.dumps(merged_page).encode()
+
+async def fetch_once(client: httpx.AsyncClient, src: dict) -> bytes:
+    if src["parser"] == "osv":
+        return await fetch_osv(client, src)
+    if src["parser"] == "nvd":
+        return await fetch_nvd(client, src)
+    url, params, headers = build_request(src)
+    if url.startswith("file://"):
+        return Path(url.replace("file://", "")).read_bytes()
+    return await _get_with_retry(client, url, params, headers)
 
 
 async def harvest(client: httpx.AsyncClient, src: dict, producer: bus.Producer) -> int:
@@ -278,8 +506,13 @@ async def main() -> None:
         async def work(src: dict) -> int:
             return await harvest(client, src, producer)
 
+
         async def on_success(src: dict, count: int) -> None:
-            await mark_success(src["source_id"], count)
+            await mark_success(
+                src["source_id"],
+                count,
+                src.get("_nvd_checkpoint_at"),
+            )
             log.info("harvested", source=src["source_id"], records=count)
 
         async def on_failure(src: dict, exc: Exception) -> None:
@@ -291,10 +524,38 @@ async def main() -> None:
             log.warning("harvest_failed", source=src["source_id"], error=reason[:300])
 
         # One task per source, so a slow or dead feed cannot hold up the rest.
+
+        def timeout_for_source(src: dict) -> float:
+            if src.get("parser") != "nvd":
+                return float(os.environ.get("RAVEN_HARVEST_TIMEOUT", "300"))
+
+            per_window = float(
+                os.environ.get("RAVEN_NVD_HARVEST_TIMEOUT", "900")
+            )
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            last_success = src.get("last_success")
+
+            if isinstance(last_success, datetime):
+                if last_success.tzinfo is None:
+                    last_success = last_success.replace(tzinfo=timezone.utc)
+                else:
+                    last_success = last_success.astimezone(timezone.utc)
+                since = min(last_success, now) - timedelta(minutes=5)
+            else:
+                since = now - timedelta(days=settings.feed_lookback_days)
+
+            span_seconds = max(0.0, (now - since).total_seconds())
+            window_seconds = NVD_DATE_WINDOW.total_seconds()
+            window_count = max(
+                1,
+                int((span_seconds + window_seconds - 1) // window_seconds),
+            )
+            return per_window * window_count
+
         runner = BoundedRunner(
             work, on_success, on_failure,
             concurrency=int(os.environ.get("RAVEN_CRAWL_CONCURRENCY", "8")),
-            timeout=float(os.environ.get("RAVEN_HARVEST_TIMEOUT", "300")),
+            timeout=timeout_for_source,
         )
         while True:
             now = datetime.now(timezone.utc)
