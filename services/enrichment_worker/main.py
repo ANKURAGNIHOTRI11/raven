@@ -8,6 +8,7 @@ are deliberately out of scope.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 import json
 import logging
@@ -21,9 +22,14 @@ import httpx
 
 from raven_common.settings import get_settings
 
+try:  # direct script execution (systemd) and package import (tests)
+    from .public_sources import parse_circl_record, parse_cve_org_record
+except ImportError:  # pragma: no cover - exercised by the host systemd entrypoint
+    from public_sources import parse_circl_record, parse_cve_org_record
+
 LOG = logging.getLogger("raven.enrichment_worker")
 CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,7}$", re.I)
-USER_AGENT = "RAVEN-CVE-Enrichment/1.0 (+defensive-security; contact=maintainer)"
+USER_AGENT = "RAVEN-CVE-Enrichment/1.0 (+https://github.com/ANKURAGNIHOTRI11/raven)"
 TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 MAX_TEXT = 100_000
 MAX_REFERENCES = 100
@@ -168,11 +174,77 @@ async def _get_json(client: httpx.AsyncClient, url: str, *, params=None, headers
         return data, True
     except (httpx.HTTPError, ValueError) as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        LOG.warning(
-            "source_request_failed source_url=%s status=%s error=%s",
-            url, status, type(exc).__name__,
-        )
+        if status in (401, 403):
+            LOG.warning(
+                "source_access_restricted source_url=%s status=%s",
+                url, status,
+            )
+        else:
+            LOG.warning(
+                "source_request_failed source_url=%s status=%s error=%s",
+                url, status, type(exc).__name__,
+            )
         return None, False
+
+
+async def _search_brave(
+    client: httpx.AsyncClient,
+    cve_id: str,
+    api_key: str,
+) -> tuple[list[dict[str, str]], bool]:
+    """Discover public URLs; snippets are leads only, never metadata evidence."""
+    query = f'"{cve_id}" vulnerability advisory vendor patch'
+    url = "https://api.search.brave.com/res/v1/web/search"
+    try:
+        response = await client.get(
+            url,
+            params={"q": query, "count": 10, "search_lang": "en"},
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key,
+                "User-Agent": USER_AGENT,
+            },
+        )
+        if response.status_code == 404:
+            return [], True
+        response.raise_for_status()
+        data = response.json()
+        web = data.get("web") if isinstance(data, dict) else None
+        results = web.get("results") if isinstance(web, dict) else None
+        if not isinstance(results, list):
+            return [], False
+        leads: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            result_url = item.get("url")
+            if not isinstance(result_url, str) or not result_url.startswith(("https://", "http://")):
+                continue
+            if result_url in seen:
+                continue
+            seen.add(result_url)
+            title = _text(item.get("title"), 300) or ""
+            snippet = _text(item.get("description"), 700) or ""
+            leads.append({
+                "url": result_url[:4096],
+                "title": title,
+                "snippet": snippet,
+                "status": "unverified_search_lead",
+            })
+            if len(leads) >= 10:
+                break
+        return leads, True
+    except (httpx.HTTPError, ValueError) as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            LOG.warning("search_access_restricted provider=brave status=%s", status)
+        else:
+            LOG.warning(
+                "search_request_failed provider=brave status=%s error=%s",
+                status, type(exc).__name__,
+            )
+        return [], False
 
 
 async def fetch_profile(
@@ -189,18 +261,45 @@ async def fetch_profile(
     if nvd_key:
         nvd_headers["apiKey"] = nvd_key
 
-    # Query sources independently: one outage must not discard the others.
-    nvd_result, ghsa_result, osv_result = await asyncio.gather(
+    circl_url = f"https://vulnerability.circl.lu/api/vulnerability/{cve_id}"
+    cve_org_url = f"https://cveawg.mitre.org/api/cve/{cve_id}"
+    circl_headers = dict(headers)
+    circl_key = os.getenv("RAVEN_CIRCL_API_KEY", "")
+    if circl_key:
+        circl_headers["X-API-KEY"] = circl_key
+    default_delay = "1.6" if circl_key else "3.1"
+    try:
+        circl_delay = max(0.0, float(os.getenv("RAVEN_CIRCL_REQUEST_DELAY_SECONDS", default_delay)))
+    except ValueError:
+        circl_delay = float(default_delay)
+    # The worker processes CVEs sequentially; keep a conservative configurable
+    # delay between public CIRCL requests to reduce rate-limit pressure.
+    if circl_delay:
+        await asyncio.sleep(circl_delay)
+
+    brave_key = os.getenv("RAVEN_BRAVE_SEARCH_API_KEY", "")
+    if brave_key:
+        brave_leads, brave_ok = await _search_brave(client, cve_id, brave_key)
+    else:
+        brave_leads, brave_ok = [], None
+
+    # Each public endpoint is independent: a login wall, 404, rate limit, or
+    # outage at one source must not discard evidence from another source.
+    nvd_result, ghsa_result, osv_result, circl_result, cve_org_result = await asyncio.gather(
         _get_json(client, "https://services.nvd.nist.gov/rest/json/cves/2.0",
                   params={"cveId": cve_id}, headers=nvd_headers),
         _get_json(client, "https://api.github.com/advisories",
                   params={"cve_id": cve_id, "per_page": 10},
                   headers=github_headers),
         _get_osv(client, cve_id, headers),
+        _get_json(client, circl_url, headers=circl_headers),
+        _get_json(client, cve_org_url, headers=headers),
     )
     nvd_data, nvd_ok = nvd_result
     ghsa_data, ghsa_ok = ghsa_result
     osv_data, osv_ok = osv_result
+    circl_data, circl_ok = circl_result
+    cve_org_data, cve_org_ok = cve_org_result
 
     nvd_ok = nvd_ok and (
         nvd_data is None or (
@@ -215,37 +314,155 @@ async def fetch_profile(
             and all(isinstance(item, dict) for item in ghsa_data)
         )
     )
+    circl_ok = circl_ok and (circl_data is None or isinstance(circl_data, dict))
+    cve_org_ok = cve_org_ok and (
+        cve_org_data is None or isinstance(cve_org_data, dict)
+    )
+
+    circl_part = (
+        parse_circl_record(circl_data, cve_id, source_url=circl_url)
+        if isinstance(circl_data, dict) else {}
+    )
+    cve_org_part = (
+        parse_cve_org_record(cve_org_data, cve_id, source_url=cve_org_url)
+        if isinstance(cve_org_data, dict) else {}
+    )
+    # A 200 response with an unexpected schema or a different CVE ID is not
+    # a definitive negative result. Fail closed for the source completeness gate.
+    if circl_data is not None and not circl_part:
+        circl_ok = False
+    if cve_org_data is not None and not cve_org_part:
+        cve_org_ok = False
+
     parts = [
         parse_nvd(nvd_data, cve_id) if isinstance(nvd_data, dict) else {},
         parse_ghsa(ghsa_data, cve_id) if isinstance(ghsa_data, list) else {},
         parse_osv(osv_data, cve_id) if isinstance(osv_data, dict) else {},
+        circl_part,
+        cve_org_part,
     ]
-    lookup_status = {"nvd": nvd_ok, "ghsa": ghsa_ok, "osv": osv_ok}
+    lookup_status = {
+        "nvd": nvd_ok,
+        "ghsa": ghsa_ok,
+        "osv": osv_ok,
+        "circl": circl_ok,
+        "cve_org": cve_org_ok,
+    }
     profile: dict[str, Any] = {
+        "title": None,
+        "description": None,
+        "published": None,
+        "modified": None,
         "sources": [],
         "references": [],
+        "field_evidence": {},
+        "_conflicting_fields": {},
         "_lookup_complete": all(lookup_status.values()),
+        "_source_status": lookup_status,
         "_failed_sources": [
             name for name, completed in lookup_status.items() if not completed
         ],
     }
+
+    profile["discovery_leads"] = brave_leads
+    profile["_optional_source_status"] = {
+        "brave_search": (
+            "not_configured" if brave_ok is None
+            else ("ok" if brave_ok else "incomplete")
+        )
+    }
+    if brave_leads:
+        profile["field_evidence"]["discovery_leads"] = [{
+            "source": "Brave Search (discovery only)",
+            "source_url": "https://api.search.brave.com/res/v1/web/search",
+            "classification": "unverified_search_leads",
+            "results": brave_leads,
+        }]
+
+    def canonical(field: str, value: Any) -> str:
+        if field in {"published", "modified"}:
+            parsed = _timestamp(value)
+            return parsed.isoformat() if parsed else str(value)
+        if isinstance(value, str):
+            return " ".join(value.split()).casefold()
+        return json.dumps(value, sort_keys=True, default=str)
+
     for part in parts:
         if not part:
             continue
-        profile["sources"].extend(part.get("sources", []))
+        source_names = part.get("sources", [])
+        source_name = source_names[0] if source_names else "unknown"
+        source_url = part.get("source_url", "")
+        if not source_url:
+            source_url = {
+                "NVD": f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
+                "GitHub Security Advisories": f"https://api.github.com/advisories?cve_id={cve_id}",
+                "OSV": f"https://api.osv.dev/v1/vulns/{cve_id}",
+            }.get(source_name, "")
+        profile["sources"].extend(source_names)
+
         for field in ("title", "description", "published", "modified"):
-            if not profile.get(field) and part.get(field):
-                profile[field] = part[field]
-        profile["references"].extend(part.get("references", []))
+            value = part.get(field)
+            if value is None or value == "":
+                continue
+            evidence = profile["field_evidence"].setdefault(field, [])
+            preview = str(value).replace("\n", " ").strip()[:500]
+            evidence.append({
+                "source": source_name,
+                "source_url": source_url,
+                "value_sha256": hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
+                "value_canonical_sha256": hashlib.sha256(canonical(field, value).encode("utf-8")).hexdigest(),
+                "value_preview": preview,
+            })
+            if not profile.get(field):
+                profile[field] = value
+
+        source_refs = part.get("references", [])
+        if source_refs:
+            profile["references"].extend(source_refs)
+            profile["field_evidence"].setdefault("references", []).append({
+                "source": source_name,
+                "source_url": source_url,
+                "count": len(source_refs),
+                "urls": [r["url"] for r in source_refs if isinstance(r, dict) and r.get("url")],
+            })
+
+    # Keep the highest-priority source value for preview, but mark any
+    # disagreement. The write path suppresses conflicting fields.
+    for field, evidence in profile["field_evidence"].items():
+        if field in {"references", "discovery_leads"}:
+            continue
+        distinct = {}
+        for item in evidence:
+            key = item.get("value_canonical_sha256") or canonical(field, item["value_preview"])
+            distinct.setdefault(key, []).append(item)
+        if len(distinct) > 1:
+            profile["_conflicting_fields"][field] = [
+                {
+                    "source": item["source"],
+                    "source_url": item["source_url"],
+                    "value_preview": item["value_preview"],
+                }
+                for item in evidence
+            ]
+
     profile["references"] = _url_refs(profile["references"])
     profile["sources"] = sorted(set(profile["sources"]))
-    # NVD commonly has a description but no title. Derive a display title only
-    # from the first sentence of that source-backed description; never invent facts.
+
+    # NVD often has no title. A fallback title may be derived from the selected,
+    # source-backed description, but its provenance is explicitly marked.
     if not profile.get("title") and profile.get("description"):
         first_sentence = re.split(r"(?<=[.!?])\s+", profile["description"], maxsplit=1)[0]
-        profile["title"] = _text(first_sentence, 240)
+        derived = _text(first_sentence, 240)
+        if derived:
+            profile["title"] = derived
+            profile["field_evidence"].setdefault("title", []).append({
+                "source": "derived_from_description",
+                "source_url": "",
+                "value_sha256": hashlib.sha256(derived.encode("utf-8")).hexdigest(),
+                "value_preview": derived,
+            })
     return profile
-
 
 async def _get_osv(client: httpx.AsyncClient, cve_id: str, headers: dict):
     """Return (matching record, completed); 404 is a completed negative lookup."""
@@ -352,7 +569,7 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
     counters = {"selected": 0, "matched": 0, "would_fill_title": 0,
                 "would_fill_description": 0, "would_fill_dates": 0,
                 "would_fill_references": 0, "updated": 0, "no_match": 0,
-                "source_incomplete": 0}
+                "source_incomplete": 0, "conflict_fields": 0}
     pool = await asyncpg.create_pool(settings.pg_dsn, min_size=1, max_size=3, command_timeout=30)
     try:
         async with pool.acquire() as conn:
@@ -374,10 +591,11 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 )
                 if not profile.get("_lookup_complete", False):
                     counters["source_incomplete"] += 1
-                title = profile.get("title")
+                conflicts = profile.get("_conflicting_fields", {})
+                title = None if "title" in conflicts else profile.get("title")
                 if title and title.casefold() == cve_id.casefold():
                     title = None
-                description = profile.get("description")
+                description = None if "description" in conflicts else profile.get("description")
                 refs = profile.get("references", [])
                 missing_title = not (row.get("title") or "").strip() or (row.get("title") or "").strip().casefold() == cve_id.casefold()
                 missing_description = not (row.get("description") or "").strip()
@@ -386,14 +604,20 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 missing_refs = _references_missing(refs_raw)
                 fill_title = bool(missing_title and title)
                 fill_description = bool(missing_description and description)
-                published = _timestamp(profile.get("published"))
-                modified = _timestamp(profile.get("modified"))
+                published = None if "published" in conflicts else _timestamp(profile.get("published"))
+                modified = None if "modified" in conflicts else _timestamp(profile.get("modified"))
                 fill_dates = bool(
                     (row.get("published") is None and published is not None)
                     or (row.get("modified") is None and modified is not None)
                 )
                 fill_refs = bool(missing_refs and refs)
+                counters["conflict_fields"] += len(conflicts)
                 if not (fill_title or fill_description or fill_dates or fill_refs):
+                    if conflicts:
+                        LOG.warning(
+                            "candidate_has_conflicting_sources cve_id=%s fields=%s",
+                            cve_id, ",".join(sorted(conflicts)),
+                        )
                     counters["no_match"] += 1
                     if apply and _can_record_no_match(profile):
                         async with pool.acquire() as conn:
@@ -401,12 +625,17 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                                 """
                                 INSERT INTO vulnerability_enrichment_audit
                                   (cve_id, sources, fields_considered, applied,
-                                   source_urls, completed_at)
+                                   source_urls, field_evidence, source_status, completed_at)
                                 VALUES ($1, $2::text[], $3::text[], FALSE,
-                                        $4::jsonb, now())
+                                        $4::jsonb, $5::jsonb, $6::jsonb, now())
                                 """,
                                 cve_id, profile.get("sources", []), [],
                                 json.dumps(profile.get("references", [])),
+                                json.dumps(profile.get("field_evidence", {})),
+                                json.dumps({
+                                    **profile.get("_source_status", {}),
+                                    **profile.get("_optional_source_status", {}),
+                                }),
                             )
                     elif apply:
                         LOG.info(
@@ -419,9 +648,13 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 counters["would_fill_description"] += int(fill_description)
                 counters["would_fill_dates"] += int(fill_dates)
                 counters["would_fill_references"] += int(fill_refs)
-                LOG.info("candidate cve_id=%s sources=%s fill_title=%s fill_description=%s fill_dates=%s fill_references=%s",
-                         cve_id, ",".join(profile.get("sources", [])), fill_title,
-                         fill_description, fill_dates, fill_refs)
+                LOG.info(
+                    "candidate cve_id=%s sources=%s fill_title=%s fill_description=%s "
+                    "fill_dates=%s fill_references=%s conflicts=%s",
+                    cve_id, ",".join(profile.get("sources", [])), fill_title,
+                    fill_description, fill_dates, fill_refs,
+                    ",".join(sorted(conflicts)),
+                )
                 if not apply:
                     continue
                 # Conditional field-by-field writes: existing nonempty values win.
@@ -447,13 +680,20 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                         await conn.execute(
                             """
                             INSERT INTO vulnerability_enrichment_audit
-                              (cve_id, sources, fields_considered, applied, source_urls, completed_at)
-                            VALUES ($1, $2::text[], $3::text[], TRUE, $4::jsonb, now())
+                              (cve_id, sources, fields_considered, applied,
+                               source_urls, field_evidence, source_status, completed_at)
+                            VALUES ($1, $2::text[], $3::text[], TRUE,
+                                    $4::jsonb, $5::jsonb, $6::jsonb, now())
                             """,
                             cve_id, profile.get("sources", []),
                             [name for name, ok in (("title", fill_title), ("description", fill_description),
                                                    ("dates", fill_dates), ("references", fill_refs)) if ok],
                             json.dumps(refs),
+                            json.dumps(profile.get("field_evidence", {})),
+                            json.dumps({
+                                **profile.get("_source_status", {}),
+                                **profile.get("_optional_source_status", {}),
+                            }),
                         )
                 counters["updated"] += 1
     finally:
@@ -485,9 +725,19 @@ async def main() -> None:
                       fields_considered TEXT[] NOT NULL DEFAULT '{}',
                       applied BOOLEAN NOT NULL DEFAULT FALSE,
                       source_urls JSONB NOT NULL DEFAULT '[]',
+                      field_evidence JSONB NOT NULL DEFAULT '{}',
+                      source_status JSONB NOT NULL DEFAULT '{}',
                       completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                 """)
+                await conn.execute(
+                    "ALTER TABLE vulnerability_enrichment_audit "
+                    "ADD COLUMN IF NOT EXISTS field_evidence JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+                await conn.execute(
+                    "ALTER TABLE vulnerability_enrichment_audit "
+                    "ADD COLUMN IF NOT EXISTS source_status JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
                 await conn.execute("CREATE INDEX IF NOT EXISTS vuln_enrich_audit_cve_idx ON vulnerability_enrichment_audit(cve_id, completed_at DESC)")
         finally:
             await pool.close()
