@@ -26,25 +26,34 @@ Public API references:
 - [CIRCL Vulnerability-Lookup API](https://vulnerability.circl.lu/api/)
 - [CVE Services API](https://cveawg.mitre.org/api-docs/)
 
+An optional Brave Web Search adapter is enabled only when
+`RAVEN_BRAVE_SEARCH_API_KEY` is configured. It stores result URLs, titles and
+short snippets as `unverified_search_leads` for discovery/review only. These
+snippets never populate title, description, dates or references and do not count
+as authoritative source evidence. Brave requires an API subscription token
+([API docs](https://api-dashboard.search.brave.com/api-reference/web/search/get)).
+
 A response is accepted only after validating its structure and exact CVE identifier
 (or exact OSV alias). A 404 is a completed negative lookup. A 401/403 is logged as
 `source_access_restricted`; other sources continue independently. A failed or
 malformed source makes the overall lookup incomplete so that a no-match is not
 recorded as definitive.
 
-CIRCL's public instance documents a 20-request/minute anonymous limit and a
-40-request/minute limit with an API key. RAVEN spaces sequential lookups by 3.1
-seconds by default without a key, or 1.6 seconds when `RAVEN_CIRCL_API_KEY` is
-configured. Operators may override the delay using
-`RAVEN_CIRCL_REQUEST_DELAY_SECONDS`; keep it at or above the instance policy.
+RAVEN spaces sequential CIRCL lookups by 3.1 seconds by default, or 1.6 seconds
+when `RAVEN_CIRCL_API_KEY` is configured. These are conservative client-side
+defaults, not a guarantee of the remote service's current quota. Operators should
+check the live instance policy and tune `RAVEN_CIRCL_REQUEST_DELAY_SECONDS`
+accordingly.
 
 ## Evidence and conflict handling
 
 For each recovered field, the worker records source name, source URL, a SHA-256
-value fingerprint and a bounded preview in `field_evidence`. This metadata is
-written to the existing `vulnerability_enrichment_audit` table only in explicit
-apply mode. The worker adds the `field_evidence JSONB` column idempotently when
-the apply schema is prepared.
+value fingerprint and a bounded preview in `field_evidence`. It also stores
+per-source completion/access status in `source_status`; optional Brave discovery
+leads are labeled unverified. This metadata is written to the existing
+`vulnerability_enrichment_audit` table only in explicit apply mode. The worker
+adds the `field_evidence JSONB` and `source_status JSONB` columns idempotently
+when the apply schema is prepared.
 
 If independent sources disagree on title, description, publication date or
 modification date, that field is marked as conflicting and is not automatically
