@@ -349,6 +349,10 @@ async def fetch_profile(
         "cve_org": cve_org_ok,
     }
     profile: dict[str, Any] = {
+        "title": None,
+        "description": None,
+        "published": None,
+        "modified": None,
         "sources": [],
         "references": [],
         "field_evidence": {},
@@ -426,7 +430,7 @@ async def fetch_profile(
     # Keep the highest-priority source value for preview, but mark any
     # disagreement. The write path suppresses conflicting fields.
     for field, evidence in profile["field_evidence"].items():
-        if field == "references":
+        if field in {"references", "discovery_leads"}:
             continue
         distinct = {}
         for item in evidence:
