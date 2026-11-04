@@ -8,6 +8,7 @@ are deliberately out of scope.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 import json
 import logging
@@ -20,6 +21,7 @@ import asyncpg
 import httpx
 
 from raven_common.settings import get_settings
+from services.enrichment_worker.public_sources import parse_circl_record, parse_cve_org_record
 
 LOG = logging.getLogger("raven.enrichment_worker")
 CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,7}$", re.I)
@@ -189,18 +191,26 @@ async def fetch_profile(
     if nvd_key:
         nvd_headers["apiKey"] = nvd_key
 
-    # Query sources independently: one outage must not discard the others.
-    nvd_result, ghsa_result, osv_result = await asyncio.gather(
+    circl_url = f"https://vulnerability.circl.lu/api/vulnerability/{cve_id}"
+    cve_org_url = f"https://cveawg.mitre.org/api/cve/{cve_id}"
+
+    # Each public endpoint is independent: a login wall, 404, rate limit, or
+    # outage at one source must not discard evidence from another source.
+    nvd_result, ghsa_result, osv_result, circl_result, cve_org_result = await asyncio.gather(
         _get_json(client, "https://services.nvd.nist.gov/rest/json/cves/2.0",
                   params={"cveId": cve_id}, headers=nvd_headers),
         _get_json(client, "https://api.github.com/advisories",
                   params={"cve_id": cve_id, "per_page": 10},
                   headers=github_headers),
         _get_osv(client, cve_id, headers),
+        _get_json(client, circl_url, headers=headers),
+        _get_json(client, cve_org_url, headers=headers),
     )
     nvd_data, nvd_ok = nvd_result
     ghsa_data, ghsa_ok = ghsa_result
     osv_data, osv_ok = osv_result
+    circl_data, circl_ok = circl_result
+    cve_org_data, cve_org_ok = cve_org_result
 
     nvd_ok = nvd_ok and (
         nvd_data is None or (
@@ -215,37 +225,116 @@ async def fetch_profile(
             and all(isinstance(item, dict) for item in ghsa_data)
         )
     )
+    circl_ok = circl_ok and (circl_data is None or isinstance(circl_data, dict))
+    cve_org_ok = cve_org_ok and (
+        cve_org_data is None or isinstance(cve_org_data, dict)
+    )
+
     parts = [
         parse_nvd(nvd_data, cve_id) if isinstance(nvd_data, dict) else {},
         parse_ghsa(ghsa_data, cve_id) if isinstance(ghsa_data, list) else {},
         parse_osv(osv_data, cve_id) if isinstance(osv_data, dict) else {},
+        parse_circl_record(circl_data, cve_id, source_url=circl_url)
+        if isinstance(circl_data, dict) else {},
+        parse_cve_org_record(cve_org_data, cve_id, source_url=cve_org_url)
+        if isinstance(cve_org_data, dict) else {},
     ]
-    lookup_status = {"nvd": nvd_ok, "ghsa": ghsa_ok, "osv": osv_ok}
+    lookup_status = {
+        "nvd": nvd_ok,
+        "ghsa": ghsa_ok,
+        "osv": osv_ok,
+        "circl": circl_ok,
+        "cve_org": cve_org_ok,
+    }
     profile: dict[str, Any] = {
         "sources": [],
         "references": [],
+        "field_evidence": {},
+        "_conflicting_fields": {},
         "_lookup_complete": all(lookup_status.values()),
+        "_source_status": lookup_status,
         "_failed_sources": [
             name for name, completed in lookup_status.items() if not completed
         ],
     }
+
+    def canonical(field: str, value: Any) -> str:
+        if field in {"published", "modified"}:
+            parsed = _timestamp(value)
+            return parsed.isoformat() if parsed else str(value)
+        if isinstance(value, str):
+            return " ".join(value.split()).casefold()
+        return json.dumps(value, sort_keys=True, default=str)
+
     for part in parts:
         if not part:
             continue
-        profile["sources"].extend(part.get("sources", []))
+        source_names = part.get("sources", [])
+        source_name = source_names[0] if source_names else "unknown"
+        source_url = part.get("source_url", "")
+        profile["sources"].extend(source_names)
+
         for field in ("title", "description", "published", "modified"):
-            if not profile.get(field) and part.get(field):
-                profile[field] = part[field]
-        profile["references"].extend(part.get("references", []))
+            value = part.get(field)
+            if value is None or value == "":
+                continue
+            evidence = profile["field_evidence"].setdefault(field, [])
+            preview = str(value).replace("\n", " ").strip()[:500]
+            evidence.append({
+                "source": source_name,
+                "source_url": source_url,
+                "value_sha256": hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
+                "value_preview": preview,
+            })
+            if not profile.get(field):
+                profile[field] = value
+
+        source_refs = part.get("references", [])
+        if source_refs:
+            profile["references"].extend(source_refs)
+            profile["field_evidence"].setdefault("references", []).append({
+                "source": source_name,
+                "source_url": source_url,
+                "count": len(source_refs),
+                "urls": [r["url"] for r in source_refs if isinstance(r, dict) and r.get("url")],
+            })
+
+    # Keep the highest-priority source value for preview, but mark any
+    # disagreement. The write path suppresses conflicting fields.
+    for field, evidence in profile["field_evidence"].items():
+        if field == "references":
+            continue
+        distinct = {}
+        for item in evidence:
+            key = canonical(field, item["value_preview"])
+            distinct.setdefault(key, []).append(item)
+        if len(distinct) > 1:
+            profile["_conflicting_fields"][field] = [
+                {
+                    "source": item["source"],
+                    "source_url": item["source_url"],
+                    "value_preview": item["value_preview"],
+                }
+                for item in evidence
+            ]
+
     profile["references"] = _url_refs(profile["references"])
     profile["sources"] = sorted(set(profile["sources"]))
-    # NVD commonly has a description but no title. Derive a display title only
-    # from the first sentence of that source-backed description; never invent facts.
-    if not profile.get("title") and profile.get("description"):
-        first_sentence = re.split(r"(?<=[.!?])\s+", profile["description"], maxsplit=1)[0]
-        profile["title"] = _text(first_sentence, 240)
-    return profile
 
+    # NVD often has no title. A fallback title may be derived from the selected,
+    # source-backed description, but its provenance is explicitly marked.
+    if not profile.get("title") and profile.get("description"):
+        first_sentence = re.split(r"(?<=[.!?])\\s+", profile["description"], maxsplit=1)[0]
+        derived = _text(first_sentence, 240)
+        if derived:
+            profile["title"] = derived
+            profile["field_evidence"].setdefault("title", []).append({
+                "source": "derived_from_description",
+                "source_url": "",
+                "value_sha256": hashlib.sha256(derived.encode("utf-8")).hexdigest(),
+                "value_preview": derived,
+            })
+    return profile
 
 async def _get_osv(client: httpx.AsyncClient, cve_id: str, headers: dict):
     """Return (matching record, completed); 404 is a completed negative lookup."""
