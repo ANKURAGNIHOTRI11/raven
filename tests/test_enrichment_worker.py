@@ -269,3 +269,41 @@ def test_fetch_profile_rejects_unexpected_nvd_and_ghsa_response_shapes():
     assert profile["_lookup_complete"] is False
     assert profile["_failed_sources"] == ["nvd", "ghsa"]
     assert _can_record_no_match(profile) is False
+
+
+
+def test_candidate_query_supports_fresh_database_without_audit_table():
+    from services.enrichment_worker.main import _candidate_query
+
+    query = _candidate_query(False)
+    assert "FROM vulnerabilities" in query
+    assert "vulnerability_enrichment_audit" not in query
+
+
+def test_candidate_query_applies_cooldown_to_all_recorded_apply_attempts():
+    from services.enrichment_worker.main import _candidate_query
+
+    query = _candidate_query(True)
+    assert "vulnerability_enrichment_audit" in query
+    assert "completed_at >= now() - INTERVAL '7 days'" in query
+    assert "applied IS FALSE" not in query
+
+
+def test_parsers_ignore_malformed_nested_feed_shapes():
+    cve_id = "CVE-2026-12345"
+    nvd = parse_nvd({
+        "vulnerabilities": [
+            {"cve": None},
+            {"cve": {"id": cve_id, "descriptions": None, "references": None}},
+        ]
+    }, cve_id)
+    assert nvd["description"] is None
+    assert nvd["references"] == []
+    assert parse_ghsa([{"identifiers": None}], cve_id) == {}
+    assert parse_osv({"id": "GHSA-abcd-efgh-ijkl", "aliases": None}, cve_id) == {}
+
+
+def test_invalid_source_timestamps_do_not_count_as_fillable_dates():
+    from services.enrichment_worker.main import _timestamp
+
+    assert _timestamp("not-a-timestamp") is None
