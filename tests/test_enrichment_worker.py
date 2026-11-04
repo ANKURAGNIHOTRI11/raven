@@ -470,3 +470,35 @@ def test_fetch_profile_uses_brave_only_as_unverified_discovery_leads(monkeypatch
     assert profile.get("title") is None
     assert profile.get("description") is None
     assert profile["references"] == []
+
+
+
+def test_fetch_profile_marks_public_registry_identifier_mismatch_incomplete():
+    cve_id = "CVE-2026-12345"
+    wrong_record = {
+        "cveMetadata": {"cveId": "CVE-2026-99999", "state": "PUBLISHED"},
+        "containers": {"cna": {"descriptions": [], "references": []}},
+    }
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": []})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host == "vulnerability.circl.lu":
+            return httpx.Response(200, json=wrong_record)
+        if request.url.host == "cveawg.mitre.org":
+            return httpx.Response(404)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["_lookup_complete"] is False
+    assert "circl" in profile["_failed_sources"]
+    assert profile["title"] is None
+    assert profile["description"] is None
