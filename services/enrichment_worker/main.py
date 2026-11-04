@@ -608,13 +608,17 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                                 """
                                 INSERT INTO vulnerability_enrichment_audit
                                   (cve_id, sources, fields_considered, applied,
-                                   source_urls, field_evidence, completed_at)
+                                   source_urls, field_evidence, source_status, completed_at)
                                 VALUES ($1, $2::text[], $3::text[], FALSE,
-                                        $4::jsonb, $5::jsonb, now())
+                                        $4::jsonb, $5::jsonb, $6::jsonb, now())
                                 """,
                                 cve_id, profile.get("sources", []), [],
                                 json.dumps(profile.get("references", [])),
                                 json.dumps(profile.get("field_evidence", {})),
+                                json.dumps({
+                                    **profile.get("_source_status", {}),
+                                    **profile.get("_optional_source_status", {}),
+                                }),
                             )
                     elif apply:
                         LOG.info(
@@ -660,15 +664,19 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                             """
                             INSERT INTO vulnerability_enrichment_audit
                               (cve_id, sources, fields_considered, applied,
-                               source_urls, field_evidence, completed_at)
+                               source_urls, field_evidence, source_status, completed_at)
                             VALUES ($1, $2::text[], $3::text[], TRUE,
-                                    $4::jsonb, $5::jsonb, now())
+                                    $4::jsonb, $5::jsonb, $6::jsonb, now())
                             """,
                             cve_id, profile.get("sources", []),
                             [name for name, ok in (("title", fill_title), ("description", fill_description),
                                                    ("dates", fill_dates), ("references", fill_refs)) if ok],
                             json.dumps(refs),
                             json.dumps(profile.get("field_evidence", {})),
+                            json.dumps({
+                                **profile.get("_source_status", {}),
+                                **profile.get("_optional_source_status", {}),
+                            }),
                         )
                 counters["updated"] += 1
     finally:
@@ -701,12 +709,17 @@ async def main() -> None:
                       applied BOOLEAN NOT NULL DEFAULT FALSE,
                       source_urls JSONB NOT NULL DEFAULT '[]',
                       field_evidence JSONB NOT NULL DEFAULT '{}',
+                      source_status JSONB NOT NULL DEFAULT '{}',
                       completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                 """)
                 await conn.execute(
                     "ALTER TABLE vulnerability_enrichment_audit "
                     "ADD COLUMN IF NOT EXISTS field_evidence JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
+                await conn.execute(
+                    "ALTER TABLE vulnerability_enrichment_audit "
+                    "ADD COLUMN IF NOT EXISTS source_status JSONB NOT NULL DEFAULT '{}'::jsonb"
                 )
                 await conn.execute("CREATE INDEX IF NOT EXISTS vuln_enrich_audit_cve_idx ON vulnerability_enrichment_audit(cve_id, completed_at DESC)")
         finally:
