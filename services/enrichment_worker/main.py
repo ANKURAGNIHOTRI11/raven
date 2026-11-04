@@ -379,7 +379,6 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                     title = None
                 description = profile.get("description")
                 refs = profile.get("references", [])
-                dates = bool(profile.get("published") or profile.get("modified"))
                 missing_title = not (row.get("title") or "").strip() or (row.get("title") or "").strip().casefold() == cve_id.casefold()
                 missing_description = not (row.get("description") or "").strip()
                 refs_raw = row.get("references_json")
