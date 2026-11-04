@@ -187,6 +187,66 @@ async def _get_json(client: httpx.AsyncClient, url: str, *, params=None, headers
         return None, False
 
 
+async def _search_brave(
+    client: httpx.AsyncClient,
+    cve_id: str,
+    api_key: str,
+) -> tuple[list[dict[str, str]], bool]:
+    """Discover public URLs; snippets are leads only, never metadata evidence."""
+    query = f'"{cve_id}" vulnerability advisory vendor patch'
+    url = "https://api.search.brave.com/res/v1/web/search"
+    try:
+        response = await client.get(
+            url,
+            params={"q": query, "count": 10, "search_lang": "en"},
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key,
+                "User-Agent": USER_AGENT,
+            },
+        )
+        if response.status_code == 404:
+            return [], True
+        response.raise_for_status()
+        data = response.json()
+        web = data.get("web") if isinstance(data, dict) else None
+        results = web.get("results") if isinstance(web, dict) else None
+        if not isinstance(results, list):
+            return [], False
+        leads: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            result_url = item.get("url")
+            if not isinstance(result_url, str) or not result_url.startswith(("https://", "http://")):
+                continue
+            if result_url in seen:
+                continue
+            seen.add(result_url)
+            title = _text(item.get("title"), 300) or ""
+            snippet = _text(item.get("description"), 700) or ""
+            leads.append({
+                "url": result_url[:4096],
+                "title": title,
+                "snippet": snippet,
+                "status": "unverified_search_lead",
+            })
+            if len(leads) >= 10:
+                break
+        return leads, True
+    except (httpx.HTTPError, ValueError) as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in (401, 403):
+            LOG.warning("search_access_restricted provider=brave status=%s", status)
+        else:
+            LOG.warning(
+                "search_request_failed provider=brave status=%s error=%s",
+                status, type(exc).__name__,
+            )
+        return [], False
+
+
 async def fetch_profile(
     client: httpx.AsyncClient,
     cve_id: str,
@@ -216,6 +276,12 @@ async def fetch_profile(
     # 40/minute with an API key. The worker processes CVEs sequentially.
     if circl_delay:
         await asyncio.sleep(circl_delay)
+
+    brave_key = os.getenv("RAVEN_BRAVE_SEARCH_API_KEY", "")
+    if brave_key:
+        brave_leads, brave_ok = await _search_brave(client, cve_id, brave_key)
+    else:
+        brave_leads, brave_ok = [], None
 
     # Each public endpoint is independent: a login wall, 404, rate limit, or
     # outage at one source must not discard evidence from another source.
@@ -280,6 +346,21 @@ async def fetch_profile(
             name for name, completed in lookup_status.items() if not completed
         ],
     }
+
+    profile["discovery_leads"] = brave_leads
+    profile["_optional_source_status"] = {
+        "brave_search": (
+            "not_configured" if brave_ok is None
+            else ("ok" if brave_ok else "incomplete")
+        )
+    }
+    if brave_leads:
+        profile["field_evidence"]["discovery_leads"] = [{
+            "source": "Brave Search (discovery only)",
+            "source_url": "https://api.search.brave.com/res/v1/web/search",
+            "classification": "unverified_search_leads",
+            "results": brave_leads,
+        }]
 
     def canonical(field: str, value: Any) -> str:
         if field in {"published", "modified"}:
