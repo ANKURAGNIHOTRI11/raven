@@ -2,7 +2,7 @@ name: EPIC-01 regression tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, epic01/cve-metadata-enrichment]
     paths:
       - "services/enrichment_worker/**"
       - "services/crawler/**"
