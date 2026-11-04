@@ -354,7 +354,7 @@ async def fetch_profile(
     # NVD often has no title. A fallback title may be derived from the selected,
     # source-backed description, but its provenance is explicitly marked.
     if not profile.get("title") and profile.get("description"):
-        first_sentence = re.split(r"(?<=[.!?])\\s+", profile["description"], maxsplit=1)[0]
+        first_sentence = re.split(r"(?<=[.!?])\s+", profile["description"], maxsplit=1)[0]
         derived = _text(first_sentence, 240)
         if derived:
             profile["title"] = derived
