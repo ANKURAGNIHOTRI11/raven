@@ -14,7 +14,8 @@ Eligible fields: `title`, `description`, `published`, `modified`, and `reference
 - Each candidate is logged with source names and fields proposed; no descriptions or secrets are logged.
 - Source requests are independent, bounded by timeouts, and tolerate one source being unavailable.
 - Writes use conditional SQL so populated fields are retained.
-- An audit table records applied source names, fields and references. It is created only with `--apply`.
+- An audit table records applied source names, fields and references. It is created only with `--apply`; dry-run checks whether it exists and remains read-only on a fresh database.
+- Every recorded apply attempt has a seven-day cooldown, including partial fills, to prevent repeatedly querying CVEs whose remaining metadata is unavailable from the current sources.
 - It does not reprocess the ingestion bus, rebuild indexes, retrain models, or invoke graph/risk services.
 
 ## Operator workflow
@@ -29,7 +30,8 @@ The runtime must provide `RAVEN_PG_DSN` and normal PostgreSQL credentials throug
 
 ## Validation and acceptance
 
-- Unit tests cover exact identifier matching, NVD English description parsing, GHSA/OSV matching, and safe reference URL handling.
+- Unit tests cover exact identifier matching, NVD English description parsing, GHSA/OSV matching, safe reference URL handling, malformed feed payloads, audit-table absence, cooldown selection and timestamp normalization.
+- GitHub Actions runs the focused enrichment unit suite for the feature branch and pull requests targeting `main`.
 - First rollout should use dry-run mode on 10 CVEs.
 - After apply, validate counts for title/description/reference recovery and confirm graph/risk/approval tables have unchanged row counts.
 - This is not a declaration of production readiness; rate limits, source coverage, field correctness, and audit review remain go-live gates.
