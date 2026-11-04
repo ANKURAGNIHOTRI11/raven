@@ -268,7 +268,11 @@ def test_fetch_profile_rejects_unexpected_nvd_and_ghsa_response_shapes():
             return httpx.Response(200, json={"unexpected": "schema"})
         if request.url.host == "api.github.com":
             return httpx.Response(200, json={"unexpected": "schema"})
-        if request.url.host == "api.osv.dev":
+        if request.url.host in {
+            "api.osv.dev",
+            "vulnerability.circl.lu",
+            "cveawg.mitre.org",
+        }:
             return httpx.Response(404)
         raise AssertionError(f"Unexpected host: {request.url.host}")
 
