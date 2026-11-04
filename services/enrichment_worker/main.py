@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - exercised by the host systemd entrypoi
 
 LOG = logging.getLogger("raven.enrichment_worker")
 CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,7}$", re.I)
-USER_AGENT = "RAVEN-CVE-Enrichment/1.0 (+defensive-security; contact=maintainer)"
+USER_AGENT = "RAVEN-CVE-Enrichment/1.0 (+https://github.com/ANKURAGNIHOTRI11/raven)"
 TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 MAX_TEXT = 100_000
 MAX_REFERENCES = 100
@@ -203,6 +203,19 @@ async def fetch_profile(
 
     circl_url = f"https://vulnerability.circl.lu/api/vulnerability/{cve_id}"
     cve_org_url = f"https://cveawg.mitre.org/api/cve/{cve_id}"
+    circl_headers = dict(headers)
+    circl_key = os.getenv("RAVEN_CIRCL_API_KEY", "")
+    if circl_key:
+        circl_headers["X-API-KEY"] = circl_key
+    default_delay = "1.6" if circl_key else "3.1"
+    try:
+        circl_delay = max(0.0, float(os.getenv("RAVEN_CIRCL_REQUEST_DELAY_SECONDS", default_delay)))
+    except ValueError:
+        circl_delay = float(default_delay)
+    # CIRCL's public instance documents 20 requests/minute anonymously and
+    # 40/minute with an API key. The worker processes CVEs sequentially.
+    if circl_delay:
+        await asyncio.sleep(circl_delay)
 
     # Each public endpoint is independent: a login wall, 404, rate limit, or
     # outage at one source must not discard evidence from another source.
@@ -213,7 +226,7 @@ async def fetch_profile(
                   params={"cve_id": cve_id, "per_page": 10},
                   headers=github_headers),
         _get_osv(client, cve_id, headers),
-        _get_json(client, circl_url, headers=headers),
+        _get_json(client, circl_url, headers=circl_headers),
         _get_json(client, cve_org_url, headers=headers),
     )
     nvd_data, nvd_ok = nvd_result
