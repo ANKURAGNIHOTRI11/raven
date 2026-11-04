@@ -1,0 +1,20 @@
+[Unit]
+Description=RAVEN EPIC-01 CVE metadata enrichment (dry-run)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=raven
+Group=raven
+WorkingDirectory=/opt/raven
+EnvironmentFile=/etc/raven/raven-enrichment.env
+Environment=PYTHONPATH=/opt/raven/libs/raven_common
+Environment=RAVEN_LOG_LEVEL=INFO
+ExecStart=/opt/raven/.venv/bin/python /opt/raven/services/enrichment_worker/main.py --limit 25
+TimeoutStartSec=3h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
