@@ -2,6 +2,13 @@ import asyncio
 from datetime import datetime, timezone
 
 import httpx
+import pytest
+
+@pytest.fixture(autouse=True)
+def no_circl_rate_delay(monkeypatch):
+    # Network timing is covered separately; keep mocked HTTP unit tests fast.
+    monkeypatch.setenv("RAVEN_CIRCL_REQUEST_DELAY_SECONDS", "0")
+
 
 from services.enrichment_worker.main import (
     needs_enrichment, parse_ghsa, parse_nvd, parse_osv,
