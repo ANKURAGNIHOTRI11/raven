@@ -298,8 +298,8 @@ async def fetch_profile(
         if not source_url:
             source_url = {
                 "NVD": f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
-                "GitHub Security Advisories": f"https://github.com/advisories?query={cve_id}",
-                "OSV": f"https://osv.dev/vulnerability/{cve_id}",
+                "GitHub Security Advisories": f"https://api.github.com/advisories?cve_id={cve_id}",
+                "OSV": f"https://api.osv.dev/v1/vulns/{cve_id}",
             }.get(source_name, "")
         profile["sources"].extend(source_names)
 
@@ -513,7 +513,13 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                     or (row.get("modified") is None and modified is not None)
                 )
                 fill_refs = bool(missing_refs and refs)
+                counters["conflict_fields"] += len(conflicts)
                 if not (fill_title or fill_description or fill_dates or fill_refs):
+                    if conflicts:
+                        LOG.warning(
+                            "candidate_has_conflicting_sources cve_id=%s fields=%s",
+                            cve_id, ",".join(sorted(conflicts)),
+                        )
                     counters["no_match"] += 1
                     if apply and _can_record_no_match(profile):
                         async with pool.acquire() as conn:
@@ -536,7 +542,6 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                         )
                     continue
                 counters["matched"] += 1
-                counters["conflict_fields"] += len(conflicts)
                 counters["would_fill_title"] += int(fill_title)
                 counters["would_fill_description"] += int(fill_description)
                 counters["would_fill_dates"] += int(fill_dates)
