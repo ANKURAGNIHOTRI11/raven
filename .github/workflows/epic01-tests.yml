@@ -7,12 +7,15 @@ on:
       - "services/enrichment_worker/**"
       - "services/crawler/**"
       - "tests/test_enrichment_worker.py"
+      - "tests/test_public_source_enrichment.py"
       - "tests/test_nvd_paging.py"
       - "tests/test_scheduler.py"
       - "libs/raven_common/**"
       - ".github/workflows/epic01-tests.yml"
   push:
-    branches: [epic01/cve-metadata-enrichment]
+    branches:
+      - epic01/cve-metadata-enrichment
+      - epic01/public-source-crosscheck
 
 permissions:
   contents: read
