@@ -8,6 +8,7 @@ import pytest
 def no_circl_rate_delay(monkeypatch):
     # Network timing is covered separately; keep mocked HTTP unit tests fast.
     monkeypatch.setenv("RAVEN_CIRCL_REQUEST_DELAY_SECONDS", "0")
+    monkeypatch.delenv("RAVEN_BRAVE_SEARCH_API_KEY", raising=False)
 
 
 from services.enrichment_worker.main import (
@@ -426,3 +427,46 @@ def test_fetch_profile_marks_disagreement_between_public_sources():
     profile = asyncio.run(fetch())
     assert "description" in profile["_conflicting_fields"]
     assert len(profile["_conflicting_fields"]["description"]) == 2
+
+
+
+def test_fetch_profile_uses_brave_only_as_unverified_discovery_leads(monkeypatch):
+    cve_id = "CVE-2026-12345"
+    monkeypatch.setenv("RAVEN_BRAVE_SEARCH_API_KEY", "test-brave-token")
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "api.search.brave.com":
+            assert request.headers["x-subscription-token"] == "test-brave-token"
+            assert cve_id in request.url.params["q"]
+            return httpx.Response(200, json={
+                "web": {
+                    "results": [{
+                        "title": "Public advisory result",
+                        "url": "https://vendor.example/advisory",
+                        "description": "Unverified search snippet.",
+                    }]
+                }
+            })
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": []})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host in {"vulnerability.circl.lu", "cveawg.mitre.org"}:
+            return httpx.Response(404)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["discovery_leads"][0]["url"] == "https://vendor.example/advisory"
+    assert profile["discovery_leads"][0]["status"] == "unverified_search_lead"
+    assert profile["_optional_source_status"]["brave_search"] == "ok"
+    assert "discovery_leads" in profile["field_evidence"]
+    # Search snippets do not become candidate title/description or references.
+    assert profile.get("title") is None
+    assert profile.get("description") is None
+    assert profile["references"] == []
