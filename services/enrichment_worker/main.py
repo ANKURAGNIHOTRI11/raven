@@ -170,10 +170,16 @@ async def _get_json(client: httpx.AsyncClient, url: str, *, params=None, headers
         return data, True
     except (httpx.HTTPError, ValueError) as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        LOG.warning(
-            "source_request_failed source_url=%s status=%s error=%s",
-            url, status, type(exc).__name__,
-        )
+        if status in (401, 403):
+            LOG.warning(
+                "source_access_restricted source_url=%s status=%s",
+                url, status,
+            )
+        else:
+            LOG.warning(
+                "source_request_failed source_url=%s status=%s error=%s",
+                url, status, type(exc).__name__,
+            )
         return None, False
 
 
@@ -272,6 +278,12 @@ async def fetch_profile(
         source_names = part.get("sources", [])
         source_name = source_names[0] if source_names else "unknown"
         source_url = part.get("source_url", "")
+        if not source_url:
+            source_url = {
+                "NVD": f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
+                "GitHub Security Advisories": f"https://github.com/advisories?query={cve_id}",
+                "OSV": f"https://osv.dev/vulnerability/{cve_id}",
+            }.get(source_name, "")
         profile["sources"].extend(source_names)
 
         for field in ("title", "description", "published", "modified"):
@@ -284,6 +296,7 @@ async def fetch_profile(
                 "source": source_name,
                 "source_url": source_url,
                 "value_sha256": hashlib.sha256(str(value).encode("utf-8")).hexdigest(),
+                "value_canonical_sha256": hashlib.sha256(canonical(field, value).encode("utf-8")).hexdigest(),
                 "value_preview": preview,
             })
             if not profile.get(field):
@@ -306,7 +319,7 @@ async def fetch_profile(
             continue
         distinct = {}
         for item in evidence:
-            key = canonical(field, item["value_preview"])
+            key = item.get("value_canonical_sha256") or canonical(field, item["value_preview"])
             distinct.setdefault(key, []).append(item)
         if len(distinct) > 1:
             profile["_conflicting_fields"][field] = [
@@ -441,7 +454,7 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
     counters = {"selected": 0, "matched": 0, "would_fill_title": 0,
                 "would_fill_description": 0, "would_fill_dates": 0,
                 "would_fill_references": 0, "updated": 0, "no_match": 0,
-                "source_incomplete": 0}
+                "source_incomplete": 0, "conflict_fields": 0}
     pool = await asyncpg.create_pool(settings.pg_dsn, min_size=1, max_size=3, command_timeout=30)
     try:
         async with pool.acquire() as conn:
@@ -463,10 +476,11 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 )
                 if not profile.get("_lookup_complete", False):
                     counters["source_incomplete"] += 1
-                title = profile.get("title")
+                conflicts = profile.get("_conflicting_fields", {})
+                title = None if "title" in conflicts else profile.get("title")
                 if title and title.casefold() == cve_id.casefold():
                     title = None
-                description = profile.get("description")
+                description = None if "description" in conflicts else profile.get("description")
                 refs = profile.get("references", [])
                 missing_title = not (row.get("title") or "").strip() or (row.get("title") or "").strip().casefold() == cve_id.casefold()
                 missing_description = not (row.get("description") or "").strip()
@@ -475,8 +489,8 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                 missing_refs = _references_missing(refs_raw)
                 fill_title = bool(missing_title and title)
                 fill_description = bool(missing_description and description)
-                published = _timestamp(profile.get("published"))
-                modified = _timestamp(profile.get("modified"))
+                published = None if "published" in conflicts else _timestamp(profile.get("published"))
+                modified = None if "modified" in conflicts else _timestamp(profile.get("modified"))
                 fill_dates = bool(
                     (row.get("published") is None and published is not None)
                     or (row.get("modified") is None and modified is not None)
@@ -490,12 +504,13 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                                 """
                                 INSERT INTO vulnerability_enrichment_audit
                                   (cve_id, sources, fields_considered, applied,
-                                   source_urls, completed_at)
+                                   source_urls, field_evidence, completed_at)
                                 VALUES ($1, $2::text[], $3::text[], FALSE,
-                                        $4::jsonb, now())
+                                        $4::jsonb, $5::jsonb, now())
                                 """,
                                 cve_id, profile.get("sources", []), [],
                                 json.dumps(profile.get("references", [])),
+                                json.dumps(profile.get("field_evidence", {})),
                             )
                     elif apply:
                         LOG.info(
@@ -504,13 +519,18 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                         )
                     continue
                 counters["matched"] += 1
+                counters["conflict_fields"] += len(conflicts)
                 counters["would_fill_title"] += int(fill_title)
                 counters["would_fill_description"] += int(fill_description)
                 counters["would_fill_dates"] += int(fill_dates)
                 counters["would_fill_references"] += int(fill_refs)
-                LOG.info("candidate cve_id=%s sources=%s fill_title=%s fill_description=%s fill_dates=%s fill_references=%s",
-                         cve_id, ",".join(profile.get("sources", [])), fill_title,
-                         fill_description, fill_dates, fill_refs)
+                LOG.info(
+                    "candidate cve_id=%s sources=%s fill_title=%s fill_description=%s "
+                    "fill_dates=%s fill_references=%s conflicts=%s",
+                    cve_id, ",".join(profile.get("sources", [])), fill_title,
+                    fill_description, fill_dates, fill_refs,
+                    ",".join(sorted(conflicts)),
+                )
                 if not apply:
                     continue
                 # Conditional field-by-field writes: existing nonempty values win.
@@ -536,13 +556,16 @@ async def run_batch(limit: int, apply: bool) -> dict[str, int]:
                         await conn.execute(
                             """
                             INSERT INTO vulnerability_enrichment_audit
-                              (cve_id, sources, fields_considered, applied, source_urls, completed_at)
-                            VALUES ($1, $2::text[], $3::text[], TRUE, $4::jsonb, now())
+                              (cve_id, sources, fields_considered, applied,
+                               source_urls, field_evidence, completed_at)
+                            VALUES ($1, $2::text[], $3::text[], TRUE,
+                                    $4::jsonb, $5::jsonb, now())
                             """,
                             cve_id, profile.get("sources", []),
                             [name for name, ok in (("title", fill_title), ("description", fill_description),
                                                    ("dates", fill_dates), ("references", fill_refs)) if ok],
                             json.dumps(refs),
+                            json.dumps(profile.get("field_evidence", {})),
                         )
                 counters["updated"] += 1
     finally:
@@ -574,9 +597,14 @@ async def main() -> None:
                       fields_considered TEXT[] NOT NULL DEFAULT '{}',
                       applied BOOLEAN NOT NULL DEFAULT FALSE,
                       source_urls JSONB NOT NULL DEFAULT '[]',
+                      field_evidence JSONB NOT NULL DEFAULT '{}',
                       completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )
                 """)
+                await conn.execute(
+                    "ALTER TABLE vulnerability_enrichment_audit "
+                    "ADD COLUMN IF NOT EXISTS field_evidence JSONB NOT NULL DEFAULT '{}'::jsonb"
+                )
                 await conn.execute("CREATE INDEX IF NOT EXISTS vuln_enrich_audit_cve_idx ON vulnerability_enrichment_audit(cve_id, completed_at DESC)")
         finally:
             await pool.close()
