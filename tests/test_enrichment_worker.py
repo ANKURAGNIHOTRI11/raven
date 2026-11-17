@@ -439,6 +439,10 @@ def test_fetch_profile_marks_disagreement_between_public_sources():
     profile = asyncio.run(fetch())
     assert "description" in profile["_conflicting_fields"]
     assert len(profile["_conflicting_fields"]["description"]) == 2
+    # Do not derive a seemingly authoritative title from one side of a
+    # description disagreement.
+    assert profile["title"] is None
+    assert "title" not in profile["_conflicting_fields"]
 
 
 
@@ -595,3 +599,79 @@ def test_get_osv_marks_unrelated_200_record_as_incomplete():
     result, lookup_completed = asyncio.run(fetch())
     assert result is None
     assert lookup_completed is False
+
+
+def test_get_osv_reports_restricted_access(caplog):
+    cve_id = "CVE-2024-1234"
+
+    async def handler(request: httpx.Request):
+        return httpx.Response(403)
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_osv(client, cve_id, {})
+
+    with caplog.at_level("WARNING"):
+        result, lookup_completed = asyncio.run(fetch())
+
+    assert result is None
+    assert lookup_completed is False
+    assert "source_access_restricted" in caplog.text
+
+
+def test_cve_record_timestamp_formatting_is_normalized_before_conflict_check():
+    cve_id = "CVE-2026-23456"
+    base_metadata = {
+        "cveId": cve_id,
+        "state": "PUBLISHED",
+    }
+
+    def make_record(published, updated):
+        return {
+            "cveMetadata": {
+                **base_metadata,
+                "datePublished": published,
+                "dateUpdated": updated,
+            },
+            "containers": {
+                "cna": {
+                    "title": "Same CVE title",
+                    "descriptions": [
+                        {"lang": "en", "value": "Same CVE description."}
+                    ],
+                    "references": [],
+                }
+            },
+        }
+
+    circl_record = make_record(
+        "2026-01-04T00:00:00Z",
+        "2026-02-05T00:00:00Z",
+    )
+    cve_org_record = make_record(
+        "2026-01-04T00:00:00.000Z",
+        "2026-02-05T00:00:00.000Z",
+    )
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": []})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host == "vulnerability.circl.lu":
+            return httpx.Response(200, json=circl_record)
+        if request.url.host == "cveawg.mitre.org":
+            return httpx.Response(200, json=cve_org_record)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert "cve_record_published" not in profile["_conflicting_fields"]
+    assert "cve_record_updated" not in profile["_conflicting_fields"]
+    assert len(profile["field_evidence"]["cve_record_published"]) == 2
+    assert len(profile["field_evidence"]["cve_record_updated"]) == 2
