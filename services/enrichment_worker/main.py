@@ -154,8 +154,10 @@ def parse_osv(data: dict[str, Any], cve_id: str) -> dict[str, Any]:
     return {
         "title": _text(data.get("summary")),
         "description": _text(data.get("details")),
-        "published": data.get("published"),
-        "modified": data.get("modified"),
+        # OSV advisory timestamps have their own lifecycle semantics and are
+        # retained as evidence instead of being conflated with NVD timestamps.
+        "osv_published": data.get("published"),
+        "osv_modified": data.get("modified"),
         "references": refs,
         "sources": ["OSV"],
     }
@@ -401,7 +403,12 @@ async def fetch_profile(
             }.get(source_name, "")
         profile["sources"].extend(source_names)
 
-        for field in ("title", "description", "published", "modified"):
+        evidence_fields = (
+            "title", "description", "published", "modified",
+            "cve_record_published", "cve_record_updated",
+            "osv_published", "osv_modified",
+        )
+        for field in evidence_fields:
             value = part.get(field)
             if value is None or value == "":
                 continue
@@ -414,7 +421,7 @@ async def fetch_profile(
                 "value_canonical_sha256": hashlib.sha256(canonical(field, value).encode("utf-8")).hexdigest(),
                 "value_preview": preview,
             })
-            if not profile.get(field):
+            if field in {"title", "description", "published", "modified"} and not profile.get(field):
                 profile[field] = value
 
         source_refs = part.get("references", [])
