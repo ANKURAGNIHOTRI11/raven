@@ -45,6 +45,30 @@ defaults, not a guarantee of the remote service's current quota. Operators shoul
 check the live instance policy and tune `RAVEN_CIRCL_REQUEST_DELAY_SECONDS`
 accordingly.
 
+## Date semantics
+
+The existing vulnerability table fields `published` and `modified` follow the
+NVD timeline: `published` means the NVD CVE publication timestamp and
+`modified` means NVD's `lastModified` timestamp. GitHub contributes to
+`published` only through its explicit `nvd_published_at` value.
+
+CVE Record Format 5.x dates are different concepts:
+- `cveMetadata.datePublished` is when the CVE Record was first published in
+  the CVE List.
+- `cveMetadata.dateUpdated` is when that CVE Record was last updated.
+
+OSV `published` and `modified` dates are OSV advisory lifecycle values. The
+worker stores these three date families as separate field-evidence keys
+(`cve_record_published`, `cve_record_updated`, `osv_published`,
+`osv_modified`) and does not compare them as if they were NVD timestamps.
+They remain available in the audit evidence JSONB; the existing table schema is
+not widened for this increment.
+
+This distinction matters for legacy CVEs where the CVE List record may have
+been published after NVD's publication timestamp. It avoids false conflicts and
+allows the NVD-aligned values to be previewed without discarding the separate
+CVE List and OSV history.
+
 ## Evidence and conflict handling
 
 For each recovered field, the worker records source name, source URL, a SHA-256
