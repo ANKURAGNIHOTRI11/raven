@@ -54,6 +54,18 @@ def test_osv_requires_exact_alias():
     assert parse_osv({"id": "CVE-2026-99999", "aliases": [], "summary": "Wrong"},
                      "CVE-2026-12345") == {}
 
+def test_osv_dates_are_kept_separate_from_nvd_timeline():
+    result = parse_osv({
+        "id": "GHSA-abcd-efgh-ijkl",
+        "aliases": ["CVE-2026-12345"],
+        "published": "2026-01-03T00:00:00Z",
+        "modified": "2026-02-04T00:00:00Z",
+    }, "CVE-2026-12345")
+    assert result["osv_published"] == "2026-01-03T00:00:00Z"
+    assert result["osv_modified"] == "2026-02-04T00:00:00Z"
+    assert "published" not in result
+    assert "modified" not in result
+
 
 def test_references_only_http_and_deduplicated():
     refs = _url_refs([
@@ -502,3 +514,65 @@ def test_fetch_profile_marks_public_registry_identifier_mismatch_incomplete():
     assert "circl" in profile["_failed_sources"]
     assert profile["title"] is None
     assert profile["description"] is None
+
+
+
+def test_fetch_profile_does_not_confuse_nvd_dates_with_cve_list_dates():
+    cve_id = "CVE-2026-12345"
+    cve_record = {
+        "cveMetadata": {
+            "cveId": cve_id,
+            "state": "PUBLISHED",
+            "datePublished": "2026-01-04T00:00:00Z",
+            "dateUpdated": "2026-02-05T00:00:00Z",
+        },
+        "containers": {
+            "cna": {
+                "title": "CVE List title",
+                "descriptions": [{"lang": "en", "value": "Same source description."}],
+                "references": [],
+            }
+        },
+    }
+
+    async def handler(request: httpx.Request):
+        if request.url.host == "services.nvd.nist.gov":
+            return httpx.Response(200, json={"vulnerabilities": [{
+                "cve": {
+                    "id": cve_id,
+                    "descriptions": [{"lang": "en", "value": "Same source description."}],
+                    "published": "2025-12-01T00:00:00.000",
+                    "lastModified": "2026-02-01T00:00:00.000",
+                    "references": [],
+                }
+            }]})
+        if request.url.host == "api.github.com":
+            return httpx.Response(200, json=[{
+                "cve_id": cve_id,
+                "identifiers": [{"type": "CVE", "value": cve_id}],
+                "summary": "NVD-aligned title",
+                "description": "Same source description.",
+                "nvd_published_at": "2025-12-01T00:00:00Z",
+                "references": [],
+            }])
+        if request.url.host == "api.osv.dev":
+            return httpx.Response(404)
+        if request.url.host == "vulnerability.circl.lu":
+            return httpx.Response(200, json=cve_record)
+        if request.url.host == "cveawg.mitre.org":
+            return httpx.Response(200, json=cve_record)
+        raise AssertionError(f"Unexpected host: {request.url.host}")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_profile(client, cve_id)
+
+    profile = asyncio.run(fetch())
+    assert profile["published"] == "2025-12-01T00:00:00.000"
+    assert profile["modified"] == "2026-02-01T00:00:00.000"
+    assert "published" not in profile["_conflicting_fields"]
+    assert "modified" not in profile["_conflicting_fields"]
+    assert len(profile["field_evidence"]["published"]) == 2
+    assert len(profile["field_evidence"]["modified"]) == 1
+    assert len(profile["field_evidence"]["cve_record_published"]) == 2
+    assert len(profile["field_evidence"]["cve_record_updated"]) == 2
