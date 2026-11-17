@@ -34,8 +34,10 @@ as authoritative source evidence. Brave requires an API subscription token
 ([API docs](https://api-dashboard.search.brave.com/api-reference/web/search/get)).
 
 A response is accepted only after validating its structure and exact CVE identifier
-(or exact OSV alias). A 404 is a completed negative lookup. A 401/403 is logged as
-`source_access_restricted`; other sources continue independently. A failed or
+(or exact OSV alias). A 200 response containing a different identifier is treated
+as a malformed source response and marks that source incomplete; it is not treated
+as a completed no-match. A 404 is a completed negative lookup. A 401/403 is logged
+as `source_access_restricted`; other sources continue independently. A failed or
 malformed source makes the overall lookup incomplete so that a no-match is not
 recorded as definitive.
 
@@ -81,8 +83,11 @@ when the apply schema is prepared.
 
 If independent sources disagree on title, description, publication date or
 modification date, that field is marked as conflicting and is not automatically
-written. Other non-conflicting missing fields remain independently eligible.
-References are deduplicated and combined from matching source records.
+written. Timestamp strings are normalized within each semantic date field before
+comparison, so equivalent ISO-8601 formatting does not create a false conflict.
+A title is not derived from a description when source descriptions conflict.
+Other non-conflicting missing fields remain independently eligible. References
+are deduplicated and combined from matching source records.
 
 The source priority for the initial selected value is NVD, GitHub Security
 Advisories, OSV, CIRCL, then CVE.org. Priority is used only to make a stable
