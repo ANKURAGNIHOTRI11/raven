@@ -407,6 +407,7 @@ async def fetch_profile(
             "title", "description", "published", "modified",
             "cve_record_published", "cve_record_updated",
             "osv_published", "osv_modified",
+            "circl_osv_published", "circl_osv_modified",
         )
         for field in evidence_fields:
             value = part.get(field)
