@@ -382,7 +382,13 @@ async def fetch_profile(
         }]
 
     def canonical(field: str, value: Any) -> str:
-        if field in {"published", "modified"}:
+        timestamp_fields = {
+            "published", "modified",
+            "cve_record_published", "cve_record_updated",
+            "osv_published", "osv_modified",
+            "circl_osv_published", "circl_osv_modified",
+        }
+        if field in timestamp_fields:
             parsed = _timestamp(value)
             return parsed.isoformat() if parsed else str(value)
         if isinstance(value, str):
@@ -459,7 +465,11 @@ async def fetch_profile(
 
     # NVD often has no title. A fallback title may be derived from the selected,
     # source-backed description, but its provenance is explicitly marked.
-    if not profile.get("title") and profile.get("description"):
+    if (
+        not profile.get("title")
+        and profile.get("description")
+        and "description" not in profile["_conflicting_fields"]
+    ):
         first_sentence = re.split(r"(?<=[.!?])\s+", profile["description"], maxsplit=1)[0]
         derived = _text(first_sentence, 240)
         if derived:
@@ -500,10 +510,16 @@ async def _get_osv(client: httpx.AsyncClient, cve_id: str, headers: dict):
         return None, False
     except (httpx.HTTPError, ValueError) as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
-        LOG.warning(
-            "source_request_failed source_url=%s status=%s error=%s",
-            url, status, type(exc).__name__,
-        )
+        if status in (401, 403):
+            LOG.warning(
+                "source_access_restricted source_url=%s status=%s",
+                url, status,
+            )
+        else:
+            LOG.warning(
+                "source_request_failed source_url=%s status=%s error=%s",
+                url, status, type(exc).__name__,
+            )
         return None, False
 
 
