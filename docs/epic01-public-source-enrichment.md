@@ -60,7 +60,7 @@ CVE Record Format 5.x dates are different concepts:
 OSV `published` and `modified` dates are OSV advisory lifecycle values. The
 worker stores these three date families as separate field-evidence keys
 (`cve_record_published`, `cve_record_updated`, `osv_published`,
-`osv_modified`) and does not compare them as if they were NVD timestamps.
+`osv_modified`, `circl_osv_published`, `circl_osv_modified`) and does not compare them as if they were NVD timestamps.
 They remain available in the audit evidence JSONB; the existing table schema is
 not widened for this increment.
 
