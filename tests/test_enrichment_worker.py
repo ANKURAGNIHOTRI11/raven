@@ -576,3 +576,22 @@ def test_fetch_profile_does_not_confuse_nvd_dates_with_cve_list_dates():
     assert len(profile["field_evidence"]["modified"]) == 1
     assert len(profile["field_evidence"]["cve_record_published"]) == 2
     assert len(profile["field_evidence"]["cve_record_updated"]) == 2
+
+
+def test_get_osv_marks_unrelated_200_record_as_incomplete():
+    cve_id = "CVE-2024-1234"
+
+    async def handler(request: httpx.Request):
+        return httpx.Response(200, json={
+            "id": "GHSA-abcd-efgh-ijkl",
+            "aliases": ["CVE-2024-9999"],
+            "summary": "Unrelated advisory",
+        })
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await _get_osv(client, cve_id, {})
+
+    result, lookup_completed = asyncio.run(fetch())
+    assert result is None
+    assert lookup_completed is False
