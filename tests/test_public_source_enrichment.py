@@ -37,8 +37,10 @@ def test_cve_org_parser_accepts_exact_cve_json_record():
     )
     assert parsed["title"] == "Example vulnerability title"
     assert parsed["description"] == "An English source-backed description."
-    assert parsed["published"] == "2026-01-02T00:00:00.000Z"
-    assert parsed["modified"] == "2026-02-03T00:00:00.000Z"
+    assert parsed["cve_record_published"] == "2026-01-02T00:00:00.000Z"
+    assert parsed["cve_record_updated"] == "2026-02-03T00:00:00.000Z"
+    assert "published" not in parsed
+    assert "modified" not in parsed
     assert parsed["sources"] == ["CVE.org CVE Services"]
     assert parsed["source_url"] == source_url
     assert parsed["references"] == [
