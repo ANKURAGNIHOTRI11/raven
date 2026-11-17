@@ -493,7 +493,11 @@ async def _get_osv(client: httpx.AsyncClient, cve_id: str, headers: dict):
         aliases = [alias.upper() for alias in aliases]
         if identifier == cve_id.upper() or cve_id.upper() in aliases:
             return data, True
-        return None, True
+        LOG.warning(
+            "source_identifier_mismatch source_url=%s requested_cve_id=%s returned_id=%s",
+            url, cve_id, identifier_value,
+        )
+        return None, False
     except (httpx.HTTPError, ValueError) as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)
         LOG.warning(
