@@ -87,6 +87,10 @@ def test_circl_parser_accepts_osv_shaped_record_with_exact_alias():
     )
     assert parsed["title"] == "OSV summary"
     assert parsed["description"] == "OSV details"
+    assert parsed["circl_osv_published"] == "2026-01-02T00:00:00Z"
+    assert parsed["circl_osv_modified"] == "2026-02-03T00:00:00Z"
+    assert "published" not in parsed
+    assert "modified" not in parsed
     assert parsed["references"][0]["url"] == "https://example.test/advisory"
 
 
