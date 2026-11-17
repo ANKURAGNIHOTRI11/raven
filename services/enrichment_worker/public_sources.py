@@ -100,8 +100,10 @@ def parse_cve_record(
     return {
         "title": _text(cna.get("title"), 240),
         "description": description,
-        "published": metadata.get("datePublished"),
-        "modified": metadata.get("dateUpdated"),
+        # These are CVE List record lifecycle dates, not NVD's publishedDate
+        # / lastModifiedDate. Keep them distinct so they are not cross-compared.
+        "cve_record_published": metadata.get("datePublished"),
+        "cve_record_updated": metadata.get("dateUpdated"),
         "references": _references(cna.get("references", [])),
         "sources": [source_name],
         "source_url": source_url,
