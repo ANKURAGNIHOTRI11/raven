@@ -137,6 +137,8 @@ MALFORMED = [
     ("desc_svg_onload", base(description="<svg onload=alert(1)>")),
     ("desc_body_onload", base(description="<body onload=alert(1)>")),
     ("desc_iframe", base(description="<iframe src=//evil.test></iframe>")),
+    ("desc_onerror_ellipsis_then_code", base(description="<img src=x onerror=...alert(1)>")),
+    ("desc_iframe_srcdoc", base(description="<iframe srcdoc=x>")),
     ("desc_entity_encoded_js_uri", base(description="&#106;avascript:alert(1)")),
     # the same payloads in fields other than description
     ("title_script_tag", base(title=XSS)),
@@ -162,4 +164,7 @@ LEGIT = [
     ("math_in_description", base(description="Triggered when the buffer length < 5 and index > 2.")),
     ("xss_advisory_quoting_markup", base(description="XSS via the <script> tag in the title field allows code execution.")),
     ("advisory_mentioning_javascript_uri", base(description="The link handler accepts javascript: URIs in href attributes.")),
+    ("advisory_payload_in_code_span", base(description="Input like `<script>alert(1)</script>` is stored unescaped.")),
+    ("advisory_placeholder_handler", base(description="a payload like <img src=x onerror=...> is stored unescaped")),
+    ("advisory_bare_iframe_mention", base(description="Content is rendered inside an <iframe> element.")),
 ]

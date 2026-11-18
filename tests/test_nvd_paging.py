@@ -1,4 +1,5 @@
 import asyncio, json
+from datetime import datetime, timedelta, timezone
 import httpx, pytest
 import importlib.util
 from pathlib import Path
@@ -74,3 +75,52 @@ def test_ghsa_stops_at_cap(monkeypatch):
     c = GhsaClient(pages=crawler.MAX_PAGES + 10)
     items = asyncio.run(crawler.fetch_paginated(c, GHSA))
     assert len(items) == crawler.MAX_PAGES * 100 and c.n == crawler.MAX_PAGES
+
+
+def _parse_nvd_date(value):
+    return datetime.strptime(
+        value, "%Y-%m-%dT%H:%M:%S.000"
+    ).replace(tzinfo=timezone.utc)
+
+
+def test_nvd_window_uses_last_success_with_five_minute_overlap():
+    last_success = datetime(
+        2026, 10, 29, 9, 55, 14, tzinfo=timezone.utc
+    )
+    src = {**SRC, "last_success": last_success}
+
+    _, params, _ = crawler.build_request(src)
+
+    assert params["lastModStartDate"] == "2026-10-29T09:50:14.000"
+    assert params["resultsPerPage"] == 2000
+
+
+def test_nvd_window_uses_lookback_without_last_success():
+    days = crawler.settings.feed_lookback_days
+    before = datetime.now(timezone.utc)
+
+    _, params, _ = crawler.build_request(SRC)
+
+    after = datetime.now(timezone.utc)
+    actual = _parse_nvd_date(params["lastModStartDate"])
+    earliest = before - timedelta(days=days, seconds=1)
+    latest = after - timedelta(days=days) + timedelta(seconds=1)
+
+    assert earliest <= actual <= latest
+
+
+def test_nvd_future_last_success_is_clamped():
+    before = datetime.now(timezone.utc)
+    src = {
+        **SRC,
+        "last_success": before + timedelta(days=1),
+    }
+
+    _, params, _ = crawler.build_request(src)
+
+    after = datetime.now(timezone.utc)
+    actual = _parse_nvd_date(params["lastModStartDate"])
+    earliest = before - timedelta(minutes=5, seconds=1)
+    latest = after - timedelta(minutes=5) + timedelta(seconds=1)
+
+    assert earliest <= actual <= latest

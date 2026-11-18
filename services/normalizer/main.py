@@ -53,14 +53,19 @@ AUTHORITATIVE_ONLY = {
 # The script rule requires a complete element, so prose such as "the <script> tag"
 # is accepted. URI detection requires an executable-looking target, so prose such
 # as "javascript: URIs" is also accepted.
+# Tightened: payloads quoted inside `code spans` / ``` fences (see CODE_SPAN),
+# placeholder values (onerror=..., <script>...</script>) and bare tag mentions
+# are accepted; embeds need a loading attribute.
+_DOTS = r"(?:\.{2,}|\u2026)"
 SCRIPTY = re.compile(
-    r"<\s*script\b[^>]*>.*?<\s*/\s*script\s*>"
-    r"|<[^>]+\bon[a-z][a-z0-9_-]*\s*="
-    r"|<\s*(?:iframe|object|embed)\b"
+    r"<\s*script\b[^>]*>(?!\s*" + _DOTS + r"\s*<)(?:.*?)<\s*/\s*script\s*>"
+    r"|<[^>]+\bon[a-z][a-z0-9_-]*\s*=(?!\s*" + _DOTS + r"(?=[\s>/'\x22]|$))"
+    r"|<\s*(?:iframe|object|embed)\b[^>]*\b(?:src|srcdoc|data)\s*="
     r"|javascript\s*:\s*(?:[a-z_$][\w$.-]*\s*\(|//)"
     r"|data\s*:\s*text/html\s*,",
     re.I | re.S,
 )
+CODE_SPAN = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 
 # Use ASCII digits for CVE years and numbers. Python's \d accepts Unicode
 # look-alike digits, which must not be accepted as canonical CVE identifiers.
@@ -246,7 +251,7 @@ def adversarial_screen(rec: dict, doc: RawDocument) -> None:
             raise Rejected("nul_byte", field)
         if len(value) > limit:
             raise Rejected(f"{field}_too_long", f"{len(value)} chars")
-        if SCRIPTY.search(html.unescape(value)):
+        if SCRIPTY.search(CODE_SPAN.sub(" ", html.unescape(value))):
             raise Rejected("active_content", f"{field}: {value[:120]}")
         rec[field] = value
 

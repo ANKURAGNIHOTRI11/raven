@@ -35,3 +35,4 @@
 **/node_modules/**
 **/raven_redhat_*_before.json
 **/raven_redhat_*_publish.jsonl
+*.bak-*
