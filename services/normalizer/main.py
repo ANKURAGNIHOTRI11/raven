@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import html
 import math
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlsplit
@@ -485,6 +486,30 @@ async def persist(v: NormalizedVulnerability) -> None:
         )
 
 
+# How strongly a CVE is tied to an asset, weakest first. Stored in findings.match_reason.
+EVIDENCE_ORDER = ("name_only", "cpe_product", "cpe_exact")
+# A name-only match is stored but kept out of scoring: only state='open' findings are used.
+NAME_ONLY_STATE = os.environ.get("RAVEN_NAME_ONLY_STATE", "unconfirmed")
+
+
+def _cpe_product(uri: str) -> tuple[str, str] | None:
+    parts = str(uri).lower().split(":")
+    if len(parts) > 5 and parts[0] == "cpe" and parts[3] not in ("", "*", "-") and parts[4] not in ("", "*", "-"):
+        return parts[3], parts[4]
+    return None
+
+
+def match_evidence(cve_cpes: list[str], asset_cpes: list[str]) -> str:
+    """cpe_exact: identical CPE string. cpe_product: same vendor and product (any version).
+    name_only: nothing but a product name in free text."""
+    if set(cve_cpes or []) & set(asset_cpes or []):
+        return "cpe_exact"
+    asset_products = {p for p in map(_cpe_product, asset_cpes or []) if p}
+    if any(p in asset_products for p in map(_cpe_product, cve_cpes or []) if p):
+        return "cpe_product"
+    return "name_only"
+
+
 async def match_assets(v: NormalizedVulnerability) -> list[str]:
     """Join the CVE to the inventory on CPE or package identity."""
     if not (v.cpe_uris or v.affected_packages):
@@ -502,11 +527,20 @@ async def match_assets(v: NormalizedVulnerability) -> list[str]:
         matched = []
         for r in rows:
             fid = hashlib.sha1(f"{v.cve_id}:{r['asset_id']}".encode()).hexdigest()[:32]
+            evidence = match_evidence(list(v.cpe_uris), list(r["cpe_uris"] or []))
+            state = "open" if evidence != "name_only" else NAME_ONLY_STATE
             await c.execute(
-                """INSERT INTO findings (finding_id, cve_id, asset_id, match_reason)
-                   VALUES ($1,$2,$3,$4)
-                   ON CONFLICT (cve_id, asset_id) DO UPDATE SET last_seen=now()""",
-                fid, v.cve_id, r["asset_id"], "cpe_or_package",
+                """INSERT INTO findings (finding_id, cve_id, asset_id, match_reason, state)
+                   VALUES ($1,$2,$3,$4,$5)
+                   ON CONFLICT (cve_id, asset_id) DO UPDATE SET
+                     last_seen = now(),
+                     match_reason = CASE
+                       WHEN array_position($6::text[], EXCLUDED.match_reason)
+                            > coalesce(array_position($6::text[], findings.match_reason), 0)
+                       THEN EXCLUDED.match_reason ELSE findings.match_reason END,
+                     state = CASE WHEN findings.state = 'unconfirmed' AND EXCLUDED.state = 'open'
+                                  THEN 'open' ELSE findings.state END""",
+                fid, v.cve_id, r["asset_id"], evidence, state, list(EVIDENCE_ORDER),
             )
             matched.append(r["asset_id"])
     if vendors:
